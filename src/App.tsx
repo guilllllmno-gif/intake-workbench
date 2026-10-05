@@ -568,6 +568,16 @@ function Shell() {
         variant="section"
         height="fill"
         contentPadding={0}
+        onClickCapture={(event) => {
+          if (
+            (event.target as Element).closest(
+              'a[href="#astryx-app-shell-main"]',
+            )
+          ) {
+            // Astryx focuses the content; keep its fragment out of the router.
+            event.preventDefault();
+          }
+        }}
         topNav={header}
         sideNav={
           session.role !== "MERCHANT" ? (
