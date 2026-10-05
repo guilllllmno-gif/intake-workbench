@@ -1,31 +1,35 @@
 import { useEffect, useRef, useState } from "react";
 import { useHref } from "react-router-dom";
 import { Banner } from "@astryxdesign/core/Banner";
-import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { Dialog } from "@astryxdesign/core/Dialog";
 import { DropdownMenu } from "@astryxdesign/core/DropdownMenu";
 import { Link } from "@astryxdesign/core/Link";
 import { Selector } from "@astryxdesign/core/Selector";
-import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Table, proportional } from "@astryxdesign/core/Table";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
-import { useOrder, useQueueFlow, useSession } from "../hooks";
+import { useDetailView, useOrder, useQueueFlow, useSession } from "../hooks";
 import {
   Badge,
   Btn,
   Confirm,
+  DetailSection,
+  DetailTabs,
+  DialogHeader,
   Empty,
   FileUpload,
   IdText,
   InlineConfirm,
   LoadState,
   OrderHeader,
+  OrderSummary,
   Panel,
   Timeline,
 } from "../ui";
 import { countryName, dateTime, mccName, money } from "../format";
-import { reasonName } from "../catalog";
+import { REASONS, reasonName } from "../catalog";
 import type {
+  ExternalText,
   ChannelSubmission,
   MutationAction,
   SupplementAction,
@@ -47,7 +51,7 @@ const mappingCodes = [
 ];
 type Document = ChannelSubmission["documents"][number];
 type Need = {
-  externalText: string;
+  externalText: ExternalText;
   actionType: SupplementAction;
   field?: string;
   targetPersonId?: string;
@@ -73,7 +77,11 @@ export default function ChannelPage() {
   const queueFlow = useQueueFlow();
   const supplementHref = useHref("/supplements/");
   const { data, loading, error, stale, busy, reload, act } = useOrder();
-  const [tab, setTab] = useState("receipt");
+  const [tab, setTab] = useDetailView("receipt", [
+    "receipt",
+    "history",
+    ...(data?.audit ? ["audit"] : []),
+  ]);
   const [dialog, setDialog] = useState<Action | "">("");
   const [mappingCode, setMappingCode] = useState("CH-MORE-INFO");
   const [isRiskType, setRiskType] = useState(false);
@@ -151,7 +159,6 @@ export default function ChannelPage() {
                 : "channel-switch";
   useEffect(() => {
     setDialog("");
-    setTab("receipt");
     setPreview(null);
     setReleaseReason("");
   }, [w?.id, session.userId]);
@@ -181,13 +188,23 @@ export default function ChannelPage() {
     setReason("");
     setMethod("邮件");
     setChannelId(alternatives[0]?.channelId || "");
-    if (action === "channel-supplement")
+    if (action === "channel-supplement") {
+      const defaults =
+        REASONS[channel?.mappedReasonCode || "CH-MORE-INFO"].externalText;
       setNeeds(
-        (channel?.requiredDocuments.length
-          ? channel.requiredDocuments
-          : ["请补充本次渠道要求的有效资料"]
-        ).map((externalText) => ({ externalText, actionType: "UPLOAD" })),
+        channel?.requiredDocuments.length
+          ? channel.requiredDocuments.map((required) => {
+              const wording = Object.values(REASONS).find((entry) =>
+                entry.externalText.zh.includes(required),
+              )?.externalText;
+              return {
+                externalText: { zh: required, en: wording?.en || "" },
+                actionType: "UPLOAD",
+              };
+            })
+          : [{ externalText: { ...defaults }, actionType: "UPLOAD" }],
       );
+    }
     if (action === "channel-resubmit") {
       const next = (channel?.documents || []).map((document) => ({
         ...document,
@@ -199,7 +216,7 @@ export default function ChannelPage() {
         for (const item of order.items || []) {
           if (item.sourceWorkOrderId !== w?.id) continue;
           const provided = {
-            name: item.externalText,
+            name: item.externalText.zh,
             value:
               item.response ||
               item.files?.map((file) => file.name).join("、") ||
@@ -207,7 +224,7 @@ export default function ChannelPage() {
             file: item.files?.[0],
           };
           const index = next.findIndex(
-            (document) => document.name === item.externalText,
+            (document) => document.name === item.externalText.zh,
           );
           if (index >= 0) next[index] = provided;
           else next.push(provided);
@@ -238,10 +255,10 @@ export default function ChannelPage() {
         : "当前角色不可处理，切换到运营账号后可操作";
     if (action === "mapping-request")
       return w?.mappingRequestedAt
-        ? "已通知组长，映射完成后会通知你继续处理"
+        ? "已提交组长映射任务，映射完成后可继续处理"
         : active
           ? ""
-          : "通知组长映射：工单恢复处理中后可用";
+          : "申请组长映射：工单恢复处理中后可用";
     if (action === "channel-supplement")
       return canSupplement
         ? ""
@@ -272,9 +289,12 @@ export default function ChannelPage() {
     return "";
   }
   function beginRecommended() {
-    if (recommendation === "mapping")
-      mappingRef.current?.scrollIntoView({ block: "center" });
-    else if (recommendation === "mapping-request")
+    if (recommendation === "mapping") {
+      setTab("receipt");
+      requestAnimationFrame(() =>
+        mappingRef.current?.scrollIntoView({ block: "center" }),
+      );
+    } else if (recommendation === "mapping-request")
       void execute("mapping-request");
     else open(recommendation);
   }
@@ -296,7 +316,8 @@ export default function ChannelPage() {
       (!needs.length ||
         needs.some(
           (item) =>
-            !item.externalText.trim() ||
+            !item.externalText.zh.trim() ||
+            !item.externalText.en.trim() ||
             (item.actionType === "REVERIFY" && !item.targetPersonId) ||
             (item.actionType === "CONFIRM_FIELD" && !item.field?.trim()),
         ))) ||
@@ -322,27 +343,16 @@ export default function ChannelPage() {
     ops && w?.status !== "CLOSED" ? (
       <div className="row">
         {claimable ? (
-          <InlineConfirm
-            title="领取工单并继续当前操作？"
-            confirmLabel="领取并继续"
-            disabled={!!actionReason(recommendation)}
+          <Btn
+            variant="primary"
+            disabled={busy || stale}
             busy={busy}
-            onConfirm={async () => {
+            onClick={async () => {
               if (await execute("claim")) beginRecommended();
             }}
           >
-            <Btn
-              variant="primary"
-              disabled={!!actionReason(recommendation)}
-              title={actionReason(recommendation) || undefined}
-            >
-              {recommendation === "mapping-request"
-                ? "通知组长映射"
-                : recommendation === "mapping"
-                  ? "补充映射"
-                  : actionLabels[recommendation]}
-            </Btn>
-          </InlineConfirm>
+            领取并处理
+          </Btn>
         ) : (
           <Btn
             variant="primary"
@@ -353,7 +363,7 @@ export default function ChannelPage() {
             {recommendation === "mapping"
               ? "补充映射"
               : recommendation === "mapping-request"
-                ? "通知组长映射"
+                ? "申请组长映射"
                 : actionLabels[recommendation]}
           </Btn>
         )}
@@ -421,11 +431,11 @@ export default function ChannelPage() {
       </div>
     ) : null;
   return (
-    <div className="page ops-pages">
+    <div className="page ops-pages detail-page">
       <LoadState loading={loading} error={error} retry={reload}>
         {data && w && (
           <>
-            <OrderHeader data={data} actions={headerActions} />
+            <OrderHeader data={data} />
             {stale && (
               <Banner
                 status="warning"
@@ -445,33 +455,25 @@ export default function ChannelPage() {
             )}
             {channel ? (
               <>
-                <TabList
+                <DetailTabs
+                  id="channel"
                   value={tab}
                   onChange={setTab}
-                  role="tablist"
-                  hasDivider
-                >
-                  <Tab
-                    value="receipt"
-                    label="渠道回执"
-                    panelId="channel-receipt"
-                  />
-                  {data.audit && (
-                    <Tab
-                      value="audit"
-                      label="操作日志"
-                      panelId="channel-audit"
-                    />
-                  )}
-                </TabList>
-                {tab === "receipt" && (
-                  <div
-                    id="channel-receipt"
-                    role="tabpanel"
-                    aria-label="渠道回执"
-                    className="channel-workspace"
-                  >
-                    <div className="ops-main-column">
+                  items={[
+                    { value: "receipt", label: "回执与处理" },
+                    {
+                      value: "history",
+                      label: "提交与关联",
+                      count: relatedSupplements.length || undefined,
+                    },
+                    ...(data.audit
+                      ? [{ value: "audit", label: "操作日志" }]
+                      : []),
+                  ]}
+                />
+                <div className="detail-layout">
+                  <div className="detail-main">
+                    <DetailSection id="channel" value="receipt" active={tab}>
                       <Panel title="上游回执">
                         <dl className="details-grid">
                           <div>
@@ -604,40 +606,8 @@ export default function ChannelPage() {
                           <Empty title="暂无提交资料" />
                         )}
                       </Panel>
-                    </div>
-                    <aside className="ops-side">
-                      <Panel title="申请画像">
-                        <dl className="details-grid ops-details-single">
-                          <div>
-                            <dt>注册地</dt>
-                            <dd>{countryName(data.merchant.country)}</dd>
-                          </div>
-                          <div>
-                            <dt>注册号</dt>
-                            <dd>
-                              <IdText value={data.merchant.registrationNo} />
-                            </dd>
-                          </div>
-                          <div>
-                            <dt>申报 MCC</dt>
-                            <dd>{mccName(data.merchant.declaredMcc)}</dd>
-                          </div>
-                          <div>
-                            <dt>预估月交易额</dt>
-                            <dd>
-                              {money(data.merchant.expectedMonthlyVolume)}
-                            </dd>
-                          </div>
-                          <div>
-                            <dt>网站</dt>
-                            <dd>{data.merchant.website || "—"}</dd>
-                          </div>
-                          <div>
-                            <dt>业务模式</dt>
-                            <dd>{data.merchant.businessModel || "—"}</dd>
-                          </div>
-                        </dl>
-                      </Panel>
+                    </DetailSection>
+                    <DetailSection id="channel" value="history" active={tab}>
                       <Panel title="各渠道提交记录">
                         <ol className="ops-record-list">
                           {[
@@ -701,19 +671,115 @@ export default function ChannelPage() {
                           </ul>
                         </Panel>
                       )}
-                    </aside>
+                      <Panel title="申请画像">
+                        <dl className="details-grid">
+                          <div>
+                            <dt>注册地</dt>
+                            <dd>{countryName(data.merchant.country)}</dd>
+                          </div>
+                          <div>
+                            <dt>注册号</dt>
+                            <dd>
+                              <IdText value={data.merchant.registrationNo} />
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>申报 MCC</dt>
+                            <dd>{mccName(data.merchant.declaredMcc)}</dd>
+                          </div>
+                          <div>
+                            <dt>预估月交易额</dt>
+                            <dd>
+                              {money(data.merchant.expectedMonthlyVolume)}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>网站</dt>
+                            <dd>{data.merchant.website || "—"}</dd>
+                          </div>
+                          <div>
+                            <dt>业务模式</dt>
+                            <dd>{data.merchant.businessModel || "—"}</dd>
+                          </div>
+                        </dl>
+                      </Panel>
+                    </DetailSection>
+                    {data.audit && (
+                      <DetailSection id="channel" value="audit" active={tab}>
+                        <Panel title="操作日志">
+                          <Timeline audit={data.audit} />
+                        </Panel>
+                      </DetailSection>
+                    )}
                   </div>
-                )}
-                {tab === "audit" && data.audit && (
-                  <div id="channel-audit" role="tabpanel" aria-label="操作日志">
-                    <Panel>
-                      <Timeline audit={data.audit} />
-                    </Panel>
-                  </div>
-                )}
+                  <aside className="detail-aside">
+                    <OrderSummary
+                      data={data}
+                      title="当前处理"
+                      actions={headerActions}
+                    >
+                      <dl className="details-grid ops-details-single">
+                        <div>
+                          <dt>当前渠道</dt>
+                          <dd>{channel.channelName}</dd>
+                        </div>
+                        <div>
+                          <dt>提交编号</dt>
+                          <dd>
+                            <IdText value={channel.submissionNo} />
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>上游回执</dt>
+                          <dd>
+                            {channel.receiptType
+                              ? receiptLabels[channel.receiptType]
+                              : "等待回执"}
+                          </dd>
+                        </div>
+                        {channel.receiptAt && (
+                          <div>
+                            <dt>回执时间</dt>
+                            <dd>{dateTime(channel.receiptAt)}</dd>
+                          </div>
+                        )}
+                      </dl>
+                      <p className="secondary">
+                        {w.status === "CLOSED"
+                          ? "工单已结束，保留提交资料与渠道处理记录。"
+                          : risk && !riskCleared
+                            ? "风险类回执需转合规判断，合规给出结论前停止渠道处理。"
+                            : actionReason(recommendation) ||
+                              (recommendation === "mapping" ||
+                              recommendation === "mapping-request"
+                                ? "先完成上游原因映射，再选择处理方式。"
+                                : `建议下一步：${actionLabels[recommendation]}`)}
+                      </p>
+                    </OrderSummary>
+                    {!!relatedSupplements.length && (
+                      <Panel title="补件进度" className="detail-context">
+                        <p>
+                          {completedSupplements.length} /{" "}
+                          {relatedSupplements.length} 个关联补件已完成
+                        </p>
+                        <Btn
+                          className="detail-shortcut"
+                          onClick={() => setTab("history")}
+                        >
+                          查看关联补件
+                        </Btn>
+                      </Panel>
+                    )}
+                  </aside>
+                </div>
               </>
             ) : (
-              <Empty title="暂无渠道提交记录" />
+              <div className="detail-layout">
+                <Empty title="暂无渠道提交记录" />
+                <aside className="detail-aside">
+                  <OrderSummary data={data} actions={headerActions} />
+                </aside>
+              </div>
             )}
             {dialog && (
               <Confirm
@@ -761,20 +827,43 @@ export default function ChannelPage() {
                   {dialog === "channel-supplement" &&
                     needs.map((item, index) => (
                       <section key={index} className="ops-document-edit stack">
-                        <TextArea
-                          label="对外补件要求"
-                          isRequired
-                          value={item.externalText}
-                          onChange={(externalText) =>
-                            setNeeds((previous) =>
-                              previous.map((need, position) =>
-                                position === index
-                                  ? { ...need, externalText }
-                                  : need,
-                              ),
-                            )
-                          }
-                        />
+                        {(["zh", "en"] as const).map((language) => (
+                          <TextArea
+                            key={language}
+                            label={`对外补件要求 · ${language === "zh" ? "中文" : "英文"}`}
+                            isRequired
+                            value={item.externalText[language]}
+                            onChange={(text) =>
+                              setNeeds((previous) =>
+                                previous.map((need, position) =>
+                                  position === index
+                                    ? {
+                                        ...need,
+                                        externalText: {
+                                          ...need.externalText,
+                                          [language]: text,
+                                        },
+                                      }
+                                    : need,
+                                ),
+                              )
+                            }
+                          />
+                        ))}
+                        <div className="ops-info-note">
+                          <strong>
+                            商户文案预览 ·{" "}
+                            {(data.application.communicationLanguage ||
+                              "en") === "zh"
+                              ? "中文"
+                              : "英文"}
+                          </strong>
+                          <p>
+                            {item.externalText[
+                              data.application.communicationLanguage || "en"
+                            ] || "请填写对应语言的补件要求"}
+                          </p>
+                        </div>
                         <Selector
                           label="补交方式"
                           value={item.actionType}

@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import {
+  Link,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Dialog } from "@astryxdesign/core/Dialog";
 import { TextArea } from "@astryxdesign/core/TextArea";
@@ -16,7 +21,15 @@ import {
   type TableColumn,
   type TablePlugin,
 } from "@astryxdesign/core/Table";
-import { ArrowLeft, RotateCcw, Star } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Building2,
+  Check,
+  RotateCcw,
+  RotateCw,
+  Star,
+} from "lucide-react";
 import { api } from "../api";
 import { COMPLIANCE_ROLES, OPS_ROLES, orderPath } from "../access";
 import { CHECK_OPTIONS, reasonName } from "../catalog";
@@ -26,19 +39,24 @@ import {
   mccName,
   money,
   verificationStatus,
+  merchantTradingName,
   statusLabel,
   deadlineDate,
 } from "../format";
-import { useAsync, useNotice, useSession } from "../hooks";
+import { useAsync, useDetailView, useNotice, useSession } from "../hooks";
 import {
   Badge,
   Btn,
+  DetailTabs,
+  DialogHeader,
+  Empty,
   Panel,
   Confirm,
   IdText,
   LoadState,
   PersonName,
   StatusBadge,
+  Sla,
   Timeline,
 } from "../ui";
 import EvidencePanel, {
@@ -91,6 +109,13 @@ const severityNames: Record<string, string> = {
   MEDIUM: "中",
   LOW: "低",
 };
+const completedOrderStatuses = new Set([
+  "CLOSED",
+  "DONE",
+  "CLOSED_NO_RESPONSE",
+  "WITHDRAWN",
+]);
+
 function DetailTable<T extends { id: string }>({
   title,
   rows,
@@ -185,6 +210,7 @@ function DetailTable<T extends { id: string }>({
             label={title + "显示列"}
             isLabelHidden
             value={activeColumnKeys}
+            formatValue={(items) => `已选 ${items.length} 列`}
             onChange={(keys) =>
               setActiveColumnKeys(
                 columns[0]
@@ -278,6 +304,7 @@ export default function ApplicationPage() {
   const { id = "" } = useParams();
   const { session } = useSession();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const notice = useNotice();
   const { data, loading, error, reload } = useAsync(
     () => api.getApplication(id, session),
@@ -295,6 +322,8 @@ export default function ApplicationPage() {
   const [stale, setStale] = useState(false);
   const [evidenceItem, setEvidenceItem] = useState<CheckItem | null>(null);
   const [reason, setReason] = useState("");
+  const checkScope =
+    searchParams.get("checks") === "pending" ? "pending" : "all";
   const ops = OPS_ROLES.includes(session.role);
   const compliance = COMPLIANCE_ROLES.includes(session.role);
   const risk = compliance || session.role === "APPROVER";
@@ -399,10 +428,65 @@ export default function ApplicationPage() {
     session.role === "OPS_LEAD" || (sales && me?.salesLead === true);
   const reviewPermission =
     session.role === "COMPLIANCE_SENIOR" || session.role === "COMPLIANCE_HEAD";
+  const tabs = [
+    { key: "overview", label: "申请概览" },
+    { key: "people", label: "人员与联系" },
+    { key: "materials", label: risk ? "核验与材料" : "补件材料" },
+    ...(internal ? [{ key: "activity", label: "工单与记录" }] : []),
+  ];
+  const [activeTab, setActiveTab] = useDetailView(
+    "overview",
+    tabs.map((tab) => tab.key),
+  );
+  const changeTab = (view: string, scope?: string) => {
+    if (scope === undefined) {
+      setActiveTab(view);
+      return;
+    }
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      if (view === "overview") next.delete("view");
+      else next.set("view", view);
+      if (scope === "pending") next.set("checks", "pending");
+      else if (scope === "all") next.delete("checks");
+      return next;
+    });
+  };
+  const activeOrders = orders.filter(
+    (order) => !completedOrderStatuses.has(order.status),
+  );
+  const currentOrder =
+    activeOrders.find((order) => order.assignee?.id === session.userId) ??
+    activeOrders.at(-1);
+  const pendingChecks = checks.filter((item) => item.status === "PENDING");
+  const visibleChecks = checkScope === "pending" ? pendingChecks : checks;
+  const supplements =
+    data?.supplements?.filter((order) => order.items?.length) ?? [];
+  const outstandingMaterials = supplements.reduce(
+    (total, order) =>
+      total +
+      (order.items ?? []).reduce(
+        (count, item) => count + Number(item.status !== "PROVIDED"),
+        0,
+      ),
+    0,
+  );
+  const hasMaterials =
+    checks.length > 0 ||
+    supplements.length > 0 ||
+    !!data?.submittedMaterials?.length;
+  const hasPeople =
+    !!data?.people?.length || ((ops || sales) && !!merchant?.contacts?.length);
+  const tradingName = merchant
+    ? merchantTradingName(merchant.legalName, merchant.displayName)
+    : undefined;
   return (
-    <div className="page stack progress-pages">
+    <div className="page stack progress-pages application-detail detail-page">
       <nav aria-label="面包屑" className="progress-breadcrumb">
-        <Link to="/applications">申请查询</Link>
+        <Link to="/applications">
+          <ArrowLeft size={14} aria-hidden="true" />
+          申请查询
+        </Link>
         <span aria-hidden="true">/</span>
         <span>{id}</span>
       </nav>
@@ -426,22 +510,26 @@ export default function ApplicationPage() {
       <LoadState loading={loading} error={error} retry={reload}>
         {data && application && merchant && (
           <>
-            <Panel className="progress-detail-header">
-              <div className="progress-title-row">
-                <div className="row">
-                  <Btn
-                    onClick={() => navigate("/applications")}
-                    icon={<ArrowLeft />}
-                    variant="secondary"
-                    title="返回申请查询"
-                  >
-                    返回申请查询
-                  </Btn>
-                  <h1>{merchant.legalName}</h1>
-                  <Badge>{application.externalStatus}</Badge>
-                  {application.isKeyMerchant && <Badge>重点</Badge>}
+            <Panel className="application-hero">
+              <div className="application-identity">
+                <div className="application-identity-main">
+                  <div className="application-emblem" aria-hidden="true">
+                    <Building2 size={24} />
+                  </div>
+                  <div className="application-identity-copy">
+                    <div className="application-kicker">
+                      <span>申请详情</span>
+                      <IdText value={application.id} />
+                      {tradingName && <span>{tradingName}</span>}
+                    </div>
+                    <div className="application-name-row">
+                      <h1>{merchant.legalName}</h1>
+                      <Badge>{application.externalStatus}</Badge>
+                      {application.isKeyMerchant && <Badge>重点商户</Badge>}
+                    </div>
+                  </div>
                 </div>
-                <div className="row">
+                <div className="row application-header-actions">
                   {keyPermission && (
                     <Tooltip
                       content={
@@ -488,15 +576,12 @@ export default function ApplicationPage() {
                       </span>
                     </Tooltip>
                   )}
+                  <Btn onClick={reload} icon={<RotateCw />} variant="ghost">
+                    刷新
+                  </Btn>
                 </div>
               </div>
-              <dl className="details-grid progress-details">
-                <div>
-                  <dt>申请号</dt>
-                  <dd>
-                    <IdText value={application.id} />
-                  </dd>
-                </div>
+              <dl className="details-grid progress-details application-summary">
                 <div>
                   <dt>注册地</dt>
                   <dd>{countryName(merchant.country)}</dd>
@@ -516,570 +601,780 @@ export default function ApplicationPage() {
                   </dd>
                 </div>
               </dl>
-            </Panel>
-            <Panel>
-              <ol className="progress-stages" aria-label="申请处理进度">
-                {stages.map((stage, index) => (
-                  <li
-                    key={stage.key}
-                    aria-current={index === current ? "step" : undefined}
-                    data-complete={
-                      index < current && !!application.stageTimes?.[stage.key]
-                    }
-                    data-skipped={
-                      index < current && !application.stageTimes?.[stage.key]
-                    }
-                  >
-                    <span className="progress-stage-number">{index + 1}</span>
-                    <div>
-                      <strong>{stage.title}</strong>
-                      <span className="secondary small">
-                        {index < current
-                          ? application.stageTimes?.[stage.key]
-                            ? dateTime(application.stageTimes[stage.key])
-                            : "跳过"
-                          : index === current
-                            ? "当前环节"
-                            : "待进入"}
-                      </span>
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            </Panel>
-            <Panel title="商户信息">
-              <dl className="details-grid progress-details">
-                {merchant.displayName && (
-                  <div>
-                    <dt>显示名</dt>
-                    <dd>{merchant.displayName}</dd>
-                  </div>
-                )}
-                {merchant.registrationNo && (
-                  <div>
-                    <dt>注册号</dt>
-                    <dd>
-                      <IdText value={merchant.registrationNo} />
-                    </dd>
-                  </div>
-                )}
-                {merchant.registrationAuthority && (
-                  <div>
-                    <dt>登记机构</dt>
-                    <dd>{merchant.registrationAuthority}</dd>
-                  </div>
-                )}
-                {merchant.declaredMcc && (
-                  <div>
-                    <dt>申报 MCC</dt>
-                    <dd>{mccName(merchant.declaredMcc)}</dd>
-                  </div>
-                )}
-                {merchant.expectedMonthlyVolume && (
-                  <div>
-                    <dt>预估月交易额</dt>
-                    <dd>{money(merchant.expectedMonthlyVolume)}</dd>
-                  </div>
-                )}
-                {merchant.website && (
-                  <div>
-                    <dt>网站</dt>
-                    <dd>{merchant.website}</dd>
-                  </div>
-                )}
-                {merchant.businessModel && (
-                  <div>
-                    <dt>业务模式</dt>
-                    <dd>{merchant.businessModel}</dd>
-                  </div>
-                )}
-              </dl>
-            </Panel>
-            {(ops || sales) && !!merchant.contacts?.length && (
-              <Panel title="商户联系人">
-                {merchant.contacts.map((contact) => (
-                  <dl
-                    className="details-grid progress-details"
-                    key={`${contact.email}:${contact.name}`}
-                  >
-                    <div>
-                      <dt>姓名</dt>
-                      <dd>{contact.name}</dd>
-                    </div>
-                    <div>
-                      <dt>邮箱</dt>
-                      <dd>{contact.email || "—"}</dd>
-                    </div>
-                    <div>
-                      <dt>电话</dt>
-                      <dd>{contact.phone || "—"}</dd>
-                    </div>
-                    <div>
-                      <dt>首选渠道</dt>
-                      <dd>{channels[contact.preferredChannel]}</dd>
-                    </div>
-                  </dl>
-                ))}
-              </Panel>
-            )}
-            {internal && !!data.people?.length && (
-              <DetailTable
-                key={`people:${session.role}:${id}`}
-                title="人员"
-                rows={data.people}
-                columns={[
-                  { header: "姓名", key: "name", width: pixel(160) },
-                  { header: "角色", key: "role" },
-                  {
-                    header: "重新验证",
-                    key: "needsReverify",
-                    renderCell: (person) =>
-                      person.needsReverify ? (
-                        <Badge tone="warning">需要重新验证</Badge>
-                      ) : (
-                        "无需重新验证"
-                      ),
-                  },
-                  ...(risk
-                    ? [
-                        {
-                          header: "持股比例",
-                          key: "ownershipPct",
-                          renderCell: (
-                            person: NonNullable<typeof data.people>[number],
-                          ) =>
-                            person.ownershipPct === undefined ||
-                            person.ownershipPct === 0
-                              ? "—"
-                              : `${person.ownershipPct.toFixed(1)}%`,
-                        },
-                        {
-                          header: "申报状态",
-                          key: "declared",
-                          renderCell: (
-                            person: NonNullable<typeof data.people>[number],
-                          ) =>
-                            person.declared ? (
-                              "已申报"
-                            ) : (
-                              <Badge tone="warning">未申报</Badge>
-                            ),
-                        },
-                        {
-                          header: "验证状态",
-                          key: "kycStatus",
-                          renderCell: (person: { kycStatus?: string }) =>
-                            verificationStatus(person.kycStatus),
-                        },
-                      ]
-                    : []),
-                ]}
-              />
-            )}
-            {compliance && data.restrictedLocked && (
-              <Banner status="info" title="已转受限" />
-            )}
-            {!!checks.length && (
-              <DetailTable
-                key={`checks:${session.role}:${id}`}
-                title="检查项与证据"
-                rows={checks}
-                columns={[
-                  {
-                    header: "检查项",
-                    key: "title",
-                    width: pixel(260),
-                    renderCell: (item) => (
-                      <div className="progress-cell-stack">
-                        <span>
-                          {item.reasonCodes.map(reasonName).join(" · ") ||
-                            item.title}
-                        </span>
-                        {compliance && (
-                          <span
-                            className={["secondary", "progress-code"].join(" ")}
-                          >
-                            {item.reasonCodes.join(" · ")}
-                          </span>
+              <div className="application-flow">
+                <ol className="progress-stages" aria-label="申请处理进度">
+                  {stages.map((stage, index) => (
+                    <li
+                      key={stage.key}
+                      aria-current={index === current ? "step" : undefined}
+                      data-complete={
+                        index < current && !!application.stageTimes?.[stage.key]
+                      }
+                      data-skipped={
+                        index < current && !application.stageTimes?.[stage.key]
+                      }
+                    >
+                      <span className="progress-stage-number">
+                        {index < current &&
+                        application.stageTimes?.[stage.key] ? (
+                          <Check size={14} aria-hidden="true" />
+                        ) : (
+                          index + 1
                         )}
+                      </span>
+                      <div>
+                        <strong>{stage.title}</strong>
+                        <span className="secondary small">
+                          {index < current
+                            ? application.stageTimes?.[stage.key]
+                              ? dateTime(application.stageTimes[stage.key])
+                              : "跳过"
+                            : index === current
+                              ? application.externalStatus === "未通过"
+                                ? "本环节已结束"
+                                : application.stage === "LIVE"
+                                  ? "已完成"
+                                  : "当前环节"
+                              : "待进入"}
+                        </span>
                       </div>
-                    ),
-                  },
-                  {
-                    header: "结论",
-                    key: "conclusion",
-                    renderCell: (item) =>
-                      CHECK_OPTIONS[item.checkType].find(
-                        (option) => option.value === item.conclusion,
-                      )?.label ??
-                      (item.status === "AUTO_CLOSED"
-                        ? "自动通过"
-                        : item.conclusion
-                          ? (decisionNames[item.conclusion] ??
-                            statusLabel(item.conclusion))
-                          : "待处理"),
-                  },
-                  { header: "原因", key: "conclusionReason" },
-                  {
-                    header: "处理人",
-                    key: "decidedBy",
-                    renderCell: (item) => <PersonName user={item.decidedBy} />,
-                  },
-                  {
-                    header: "结论时间",
-                    key: "decidedAt",
-                    renderCell: (item) => dateTime(item.decidedAt),
-                  },
-                  {
-                    header: "证据",
-                    key: "evidence",
-                    renderCell: (item) => (
-                      <Btn
-                        onClick={() => setEvidenceItem(item)}
-                        variant="ghost"
-                      >
-                        查看{item.snapshotId ? "快照" : "证据"}
-                      </Btn>
-                    ),
-                  },
-                ]}
-              />
-            )}
-            {session.role === "APPROVER" &&
-              !!data.submittedMaterials?.length && (
-                <Panel title="商户提交材料">
-                  <div className="ev-documents">
-                    {data.submittedMaterials.map((file) => (
-                      <FileSpecimen key={file.id} file={file} />
-                    ))}
-                  </div>
-                </Panel>
-              )}
-            {(ops || compliance || sales) &&
-              data.supplements
-                ?.filter((order) => order.items?.length)
-                .map((order) => (
-                  <Panel
-                    key={order.id}
-                    title={
-                      sales ? (
-                        "待补充资料"
-                      ) : (
-                        <div className="row">
-                          补件工单
-                          <IdText value={order.id} />
-                          <StatusBadge status={order.status} />
-                        </div>
-                      )
-                    }
-                    actions={
-                      !sales ? (
-                        <Link to={orderPath(order)}>查看工单</Link>
-                      ) : undefined
-                    }
-                  >
-                    {!sales && (
-                      <p className="secondary">
-                        商户截止：{deadlineDate(order.dueAt, merchant.country)}
-                      </p>
-                    )}
-                    <ul className="progress-supplement-list">
-                      {order.items?.map((item) => (
-                        <li key={item.id}>
-                          <span>{item.externalText}</span>
-                          {!sales && (
-                            <Badge>{supplementNames[item.status]}</Badge>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  </Panel>
-                ))}
-            {(ops || compliance) && !!data.channels?.length && (
-              <DetailTable
-                key={`channels:${session.role}:${id}`}
-                title="渠道提交"
-                rows={data.channels}
-                columns={[
-                  { header: "渠道", key: "channelName", width: pixel(160) },
-                  {
-                    header: "提交号",
-                    key: "submissionNo",
-                    renderCell: (channel) => (
-                      <IdText value={channel.submissionNo} />
-                    ),
-                  },
-                  {
-                    header: "回执类型",
-                    key: "receiptType",
-                    renderCell: (channel) =>
-                      channel.receiptType
-                        ? {
-                            REJECTED: "驳回",
-                            MORE_INFO: "要求补充材料",
-                            TIMEOUT: "超时",
-                          }[channel.receiptType]
-                        : "—",
-                  },
-                  { header: "上游原文", key: "upstreamReasonRaw" },
-                  {
-                    header: "提交时间",
-                    key: "submittedAt",
-                    renderCell: (channel) => dateTime(channel.submittedAt),
-                  },
-                ]}
-              />
-            )}
-            {sales && application.stage === "CHANNEL" && (
-              <Panel>渠道进件中</Panel>
-            )}
-            {(ops || risk) && merchant.conditions && (
-              <Panel title="附加条件">
-                <dl className="details-grid progress-details">
-                  <div>
-                    <dt>单笔限额</dt>
-                    <dd>
-                      {money({
-                        amount: merchant.conditions.singleLimit,
-                        currency:
-                          merchant.expectedMonthlyVolume?.currency ?? "USD",
-                      })}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>月限额</dt>
-                    <dd>
-                      {money({
-                        amount: merchant.conditions.monthlyLimit,
-                        currency:
-                          merchant.expectedMonthlyVolume?.currency ?? "USD",
-                      })}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>风险准备金比例</dt>
-                    <dd>{merchant.conditions.reservePct.toFixed(1)}%</dd>
-                  </div>
-                  <div>
-                    <dt>准备金期限</dt>
-                    <dd>{merchant.conditions.reserveDays}天</dd>
-                  </div>
-                  <div>
-                    <dt>复审周期</dt>
-                    <dd>{merchant.conditions.reviewDays}天</dd>
-                  </div>
-                </dl>
-              </Panel>
-            )}
-            {risk && !!data.approvalDecisions?.length && (
-              <DetailTable
-                key={`approvals:${session.role}:${id}`}
-                title="审批记录"
-                rows={data.approvalDecisions}
-                columns={[
-                  {
-                    header: "决定",
-                    key: "decision",
-                    width: pixel(150),
-                    renderCell: (entry) =>
-                      decisionNames[entry.decision] ??
-                      statusLabel(entry.decision),
-                  },
-                  {
-                    header: "原因",
-                    key: "reason",
-                    renderCell: (entry) =>
-                      entry.reason ? reasonName(entry.reason) : "—",
-                  },
-                  {
-                    header: "审批人",
-                    key: "approvers",
-                    renderCell: (entry) => (
-                      <div className="row">
-                        {entry.approvers.map((person) => (
-                          <PersonName key={person.id} user={person} />
-                        ))}
-                      </div>
-                    ),
-                  },
-                  {
-                    header: "时间",
-                    key: "at",
-                    renderCell: (entry) => dateTime(entry.at),
-                  },
-                ]}
-              />
-            )}
-            {(ops || compliance) && !!data.contactLog?.length && (
-              <DetailTable
-                key={`contacts:${session.role}:${id}`}
-                title="沟通记录"
-                rows={data.contactLog}
-                columns={[
-                  {
-                    header: "时间",
-                    key: "at",
-                    width: pixel(180),
-                    renderCell: (entry) => dateTime(entry.at),
-                  },
-                  {
-                    header: "方式",
-                    key: "channel",
-                    renderCell: (entry) => channels[entry.channel],
-                  },
-                  { header: "摘要", key: "summary" },
-                  {
-                    header: "记录人",
-                    key: "by",
-                    renderCell: (entry) => <PersonName user={entry.by} />,
-                  },
-                ]}
-              />
-            )}
-            {orders
-              .filter(
-                (order) =>
-                  (risk && order.complianceNote) ||
-                  ((ops || compliance) && order.opsNote),
-              )
-              .map((order) => (
-                <Panel
-                  key={order.id}
-                  title={
-                    <div className="row">
-                      内部备注
-                      <IdText value={order.id} />
-                    </div>
-                  }
-                >
-                  {risk && order.complianceNote && (
-                    <p>合规：{order.complianceNote}</p>
-                  )}
-                  {(ops || compliance) && order.opsNote && (
-                    <p>运营：{order.opsNote}</p>
-                  )}
-                </Panel>
-              ))}
-            {risk && checks.some((item) => item.note) && (
-              <Panel title="合规内部备注">
-                {checks
-                  .filter((item) => item.note)
-                  .map((item) => (
-                    <p key={item.id}>
-                      <strong>{item.title}：</strong>
-                      {item.note}
-                    </p>
+                    </li>
                   ))}
-              </Panel>
-            )}
-            {session.role === "COMPLIANCE_HEAD" &&
-              orders
-                .filter(
-                  (order) =>
-                    order.type === "RESTRICTED" &&
-                    (order.restrictedReason || order.caseId),
-                )
-                .map((order) => (
-                  <Panel key={order.id} title="受限内容">
+                </ol>
+              </div>
+            </Panel>
+            <DetailTabs
+              id="application"
+              label="申请详情分区"
+              value={activeTab}
+              onChange={(view) => changeTab(view)}
+              items={tabs.map((tab) => ({ value: tab.key, label: tab.label }))}
+            />
+            <div className="application-detail-body">
+              <div
+                className="application-detail-panel"
+                id={`application-panel-${activeTab}`}
+                role="tabpanel"
+                aria-labelledby={`application-tab-${activeTab}`}
+                tabIndex={0}
+              >
+                <div
+                  className="application-section-group"
+                  hidden={activeTab !== "overview"}
+                >
+                  <Panel title="商户档案" subtitle="登记与业务信息">
                     <dl className="details-grid progress-details">
-                      {order.restrictedReason && (
+                      {merchant.registrationNo && (
                         <div>
-                          <dt>转受限原因</dt>
-                          <dd>{order.restrictedReason}</dd>
+                          <dt>注册号</dt>
+                          <dd>
+                            <IdText value={merchant.registrationNo} />
+                          </dd>
                         </div>
                       )}
-                      {order.caseId && (
+                      {merchant.registrationAuthority && (
                         <div>
-                          <dt>案件编号</dt>
-                          <dd>
-                            <IdText value={order.caseId} />
-                          </dd>
+                          <dt>登记机构</dt>
+                          <dd>{merchant.registrationAuthority}</dd>
+                        </div>
+                      )}
+                      {merchant.declaredMcc && (
+                        <div>
+                          <dt>申报 MCC</dt>
+                          <dd>{mccName(merchant.declaredMcc)}</dd>
+                        </div>
+                      )}
+                      {merchant.expectedMonthlyVolume && (
+                        <div>
+                          <dt>预估月交易额</dt>
+                          <dd>{money(merchant.expectedMonthlyVolume)}</dd>
+                        </div>
+                      )}
+                      {merchant.website && (
+                        <div className="application-detail-wide">
+                          <dt>网站</dt>
+                          <dd>{merchant.website}</dd>
+                        </div>
+                      )}
+                      {merchant.businessModel && (
+                        <div className="application-detail-wide">
+                          <dt>业务模式</dt>
+                          <dd>{merchant.businessModel}</dd>
                         </div>
                       )}
                     </dl>
                   </Panel>
-                ))}
-            {risk && !!data.events?.length && (
-              <DetailTable
-                key={`events:${session.role}:${id}`}
-                title="风险事件"
-                rows={data.events}
-                columns={[
-                  {
-                    header: "原因",
-                    key: "reasonCode",
-                    width: pixel(260),
-                    renderCell: (event) => (
-                      <div className="progress-cell-stack">
-                        <span>{reasonName(event.reasonCode)}</span>
-                        {compliance && (
-                          <span
-                            className={["secondary", "progress-code"].join(" ")}
-                          >
-                            {event.reasonCode}
-                          </span>
+                  {sales && application.stage === "CHANNEL" && (
+                    <Panel>渠道进件中</Panel>
+                  )}
+                </div>
+                <div
+                  className="application-section-group"
+                  hidden={activeTab !== "people"}
+                >
+                  {!hasPeople && (
+                    <Panel>
+                      <Empty title="暂无人员或联系人信息" />
+                    </Panel>
+                  )}
+                  {(ops || sales) && !!merchant.contacts?.length && (
+                    <Panel title="商户联系人">
+                      {merchant.contacts.map((contact) => (
+                        <dl
+                          className="details-grid progress-details"
+                          key={`${contact.email}:${contact.name}`}
+                        >
+                          <div>
+                            <dt>姓名</dt>
+                            <dd>{contact.name}</dd>
+                          </div>
+                          <div>
+                            <dt>邮箱</dt>
+                            <dd>{contact.email || "—"}</dd>
+                          </div>
+                          <div>
+                            <dt>电话</dt>
+                            <dd>{contact.phone || "—"}</dd>
+                          </div>
+                          <div>
+                            <dt>首选渠道</dt>
+                            <dd>{channels[contact.preferredChannel]}</dd>
+                          </div>
+                        </dl>
+                      ))}
+                    </Panel>
+                  )}
+                  {internal && !!data.people?.length && (
+                    <DetailTable
+                      key={`people:${session.role}:${id}`}
+                      title="人员"
+                      rows={data.people}
+                      columns={[
+                        { header: "姓名", key: "name", width: pixel(160) },
+                        { header: "角色", key: "role" },
+                        {
+                          header: "重新验证",
+                          key: "needsReverify",
+                          renderCell: (person) =>
+                            person.needsReverify ? (
+                              <Badge tone="warning">需要重新验证</Badge>
+                            ) : (
+                              "无需重新验证"
+                            ),
+                        },
+                        ...(risk
+                          ? [
+                              {
+                                header: "持股比例",
+                                key: "ownershipPct",
+                                renderCell: (
+                                  person: NonNullable<
+                                    typeof data.people
+                                  >[number],
+                                ) =>
+                                  person.ownershipPct === undefined ||
+                                  person.ownershipPct === 0
+                                    ? "—"
+                                    : `${person.ownershipPct.toFixed(1)}%`,
+                              },
+                              {
+                                header: "申报状态",
+                                key: "declared",
+                                renderCell: (
+                                  person: NonNullable<
+                                    typeof data.people
+                                  >[number],
+                                ) =>
+                                  person.declared ? (
+                                    "已申报"
+                                  ) : (
+                                    <Badge tone="warning">未申报</Badge>
+                                  ),
+                              },
+                              {
+                                header: "验证状态",
+                                key: "kycStatus",
+                                renderCell: (person: { kycStatus?: string }) =>
+                                  verificationStatus(person.kycStatus),
+                              },
+                            ]
+                          : []),
+                      ]}
+                    />
+                  )}
+                </div>
+                <div
+                  className="application-section-group"
+                  hidden={activeTab !== "materials"}
+                >
+                  {!hasMaterials && (
+                    <Panel>
+                      <Empty
+                        title="暂无核验记录或补件材料"
+                        description="有相关检查项或补件任务时，会在这里集中展示"
+                      />
+                    </Panel>
+                  )}
+                  {checks.length > 0 && (
+                    <div className="application-material-filter">
+                      <span className="secondary">
+                        已完成 {checks.length - pendingChecks.length} /{" "}
+                        {checks.length} 项核验
+                      </span>
+                      <Selector
+                        label="检查项范围"
+                        isLabelHidden
+                        value={checkScope}
+                        onChange={(scope) => changeTab("materials", scope)}
+                        options={[
+                          {
+                            value: "all",
+                            label: `全部检查项（${checks.length}）`,
+                          },
+                          {
+                            value: "pending",
+                            label: `只看待处理（${pendingChecks.length}）`,
+                          },
+                        ]}
+                      />
+                    </div>
+                  )}
+                  {compliance && data.restrictedLocked && (
+                    <Banner status="info" title="已转受限" />
+                  )}
+                  {!!checks.length && (
+                    <DetailTable
+                      key={`checks:${session.role}:${id}`}
+                      title="检查项与证据"
+                      rows={visibleChecks}
+                      columns={[
+                        {
+                          header: "检查项",
+                          key: "title",
+                          width: pixel(260),
+                          renderCell: (item) => (
+                            <div className="progress-cell-stack">
+                              <span>
+                                {item.reasonCodes.map(reasonName).join(" · ") ||
+                                  item.title}
+                              </span>
+                              {compliance && (
+                                <span
+                                  className={[
+                                    "secondary",
+                                    "progress-code",
+                                  ].join(" ")}
+                                >
+                                  {item.reasonCodes.join(" · ")}
+                                </span>
+                              )}
+                            </div>
+                          ),
+                        },
+                        {
+                          header: "结论",
+                          key: "conclusion",
+                          renderCell: (item) =>
+                            CHECK_OPTIONS[item.checkType].find(
+                              (option) => option.value === item.conclusion,
+                            )?.label ??
+                            (item.status === "AUTO_CLOSED"
+                              ? "自动通过"
+                              : item.conclusion
+                                ? (decisionNames[item.conclusion] ??
+                                  statusLabel(item.conclusion))
+                                : "待处理"),
+                        },
+                        { header: "原因", key: "conclusionReason" },
+                        {
+                          header: "处理人",
+                          key: "decidedBy",
+                          renderCell: (item) => (
+                            <PersonName user={item.decidedBy} />
+                          ),
+                        },
+                        {
+                          header: "结论时间",
+                          key: "decidedAt",
+                          renderCell: (item) => dateTime(item.decidedAt),
+                        },
+                        {
+                          header: "证据",
+                          key: "evidence",
+                          renderCell: (item) => (
+                            <Btn
+                              onClick={() => setEvidenceItem(item)}
+                              variant="ghost"
+                            >
+                              查看{item.snapshotId ? "快照" : "证据"}
+                            </Btn>
+                          ),
+                        },
+                      ]}
+                    />
+                  )}
+                  {session.role === "APPROVER" &&
+                    !!data.submittedMaterials?.length && (
+                      <Panel title="商户提交材料">
+                        <div className="ev-documents">
+                          {data.submittedMaterials.map((file) => (
+                            <FileSpecimen key={file.id} file={file} />
+                          ))}
+                        </div>
+                      </Panel>
+                    )}
+                  {(ops || compliance || sales) &&
+                    supplements.map((order) => (
+                      <Panel
+                        key={order.id}
+                        title={
+                          sales ? (
+                            "待补充资料"
+                          ) : (
+                            <div className="row">
+                              补件工单
+                              <IdText value={order.id} />
+                              <StatusBadge status={order.status} />
+                            </div>
+                          )
+                        }
+                        actions={
+                          !sales ? (
+                            <Link to={orderPath(order)}>查看工单</Link>
+                          ) : undefined
+                        }
+                      >
+                        {!sales && (
+                          <p className="secondary">
+                            商户截止：
+                            {deadlineDate(order.dueAt, merchant.country)}
+                          </p>
                         )}
-                      </div>
-                    ),
-                  },
-                  {
-                    header: "等级",
-                    key: "severity",
-                    renderCell: (event) =>
-                      severityNames[event.severity] ??
-                      statusLabel(event.severity),
-                  },
-                  { header: "来源", key: "source" },
-                  {
-                    header: "时间",
-                    key: "createdAt",
-                    renderCell: (event) => dateTime(event.createdAt),
-                  },
-                ]}
-              />
-            )}
-            {(ops || compliance) && !!data.audit?.length && (
-              <Panel title="审计日志">
-                <Timeline audit={data.audit} />
-              </Panel>
-            )}
-            {internal && (
-              <DetailTable
-                key={`orders:${session.role}:${id}`}
-                title="相关工单"
-                rows={orders}
-                columns={[
-                  {
-                    header: "工单号",
-                    key: "id",
-                    width: pixel(200),
-                    renderCell: (order) => (
-                      <Link to={orderPath(order)}>
-                        <IdText value={order.id} />
-                      </Link>
-                    ),
-                  },
-                  {
-                    header: "类型",
-                    key: "type",
-                    renderCell: (order) => orderNames[order.type],
-                  },
-                  {
-                    header: "状态",
-                    key: "status",
-                    renderCell: (order) => (
-                      <StatusBadge status={order.status} />
-                    ),
-                  },
-                  {
-                    header: "处理人",
-                    key: "assignee",
-                    renderCell: (order) => <PersonName user={order.assignee} />,
-                  },
-                ]}
-                onActivate={(order) => navigate(orderPath(order))}
-              />
-            )}
+                        <ul className="progress-supplement-list">
+                          {order.items?.map((item) => (
+                            <li key={item.id}>
+                              <span>{item.externalText.zh}</span>
+                              {!sales && (
+                                <Badge>{supplementNames[item.status]}</Badge>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </Panel>
+                    ))}
+                </div>
+                <div
+                  className="application-section-group"
+                  hidden={activeTab !== "activity"}
+                >
+                  {internal && (
+                    <DetailTable
+                      key={`orders:${session.role}:${id}`}
+                      title="相关工单"
+                      rows={orders}
+                      columns={[
+                        {
+                          header: "工单号",
+                          key: "id",
+                          width: pixel(200),
+                          renderCell: (order) => (
+                            <Link to={orderPath(order)}>
+                              <IdText value={order.id} />
+                            </Link>
+                          ),
+                        },
+                        {
+                          header: "类型",
+                          key: "type",
+                          renderCell: (order) => orderNames[order.type],
+                        },
+                        {
+                          header: "状态",
+                          key: "status",
+                          renderCell: (order) => (
+                            <StatusBadge status={order.status} />
+                          ),
+                        },
+                        {
+                          header: "处理人",
+                          key: "assignee",
+                          renderCell: (order) => (
+                            <PersonName user={order.assignee} />
+                          ),
+                        },
+                      ]}
+                      onActivate={(order) => navigate(orderPath(order))}
+                    />
+                  )}
+                  {(ops || compliance) && !!data.channels?.length && (
+                    <DetailTable
+                      key={`channels:${session.role}:${id}`}
+                      title="渠道提交"
+                      rows={data.channels}
+                      columns={[
+                        {
+                          header: "渠道",
+                          key: "channelName",
+                          width: pixel(160),
+                        },
+                        {
+                          header: "提交号",
+                          key: "submissionNo",
+                          renderCell: (channel) => (
+                            <IdText value={channel.submissionNo} />
+                          ),
+                        },
+                        {
+                          header: "回执类型",
+                          key: "receiptType",
+                          renderCell: (channel) =>
+                            channel.receiptType
+                              ? {
+                                  REJECTED: "驳回",
+                                  MORE_INFO: "要求补充材料",
+                                  TIMEOUT: "超时",
+                                }[channel.receiptType]
+                              : "—",
+                        },
+                        { header: "上游原文", key: "upstreamReasonRaw" },
+                        {
+                          header: "提交时间",
+                          key: "submittedAt",
+                          renderCell: (channel) =>
+                            dateTime(channel.submittedAt),
+                        },
+                      ]}
+                    />
+                  )}
+                </div>
+                <div
+                  className="application-section-group"
+                  hidden={activeTab !== "overview"}
+                >
+                  {(ops || risk) && merchant.conditions && (
+                    <Panel title="附加条件">
+                      <dl className="details-grid progress-details">
+                        <div>
+                          <dt>单笔限额</dt>
+                          <dd>
+                            {money({
+                              amount: merchant.conditions.singleLimit,
+                              currency:
+                                merchant.expectedMonthlyVolume?.currency ??
+                                "USD",
+                            })}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>月限额</dt>
+                          <dd>
+                            {money({
+                              amount: merchant.conditions.monthlyLimit,
+                              currency:
+                                merchant.expectedMonthlyVolume?.currency ??
+                                "USD",
+                            })}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>风险准备金比例</dt>
+                          <dd>{merchant.conditions.reservePct.toFixed(1)}%</dd>
+                        </div>
+                        <div>
+                          <dt>准备金期限</dt>
+                          <dd>{merchant.conditions.reserveDays}天</dd>
+                        </div>
+                        <div>
+                          <dt>复审周期</dt>
+                          <dd>{merchant.conditions.reviewDays}天</dd>
+                        </div>
+                      </dl>
+                    </Panel>
+                  )}
+                </div>
+                <div
+                  className="application-section-group"
+                  hidden={activeTab !== "activity"}
+                >
+                  {risk && !!data.approvalDecisions?.length && (
+                    <DetailTable
+                      key={`approvals:${session.role}:${id}`}
+                      title="审批记录"
+                      rows={data.approvalDecisions}
+                      columns={[
+                        {
+                          header: "决定",
+                          key: "decision",
+                          width: pixel(150),
+                          renderCell: (entry) =>
+                            decisionNames[entry.decision] ??
+                            statusLabel(entry.decision),
+                        },
+                        {
+                          header: "原因",
+                          key: "reason",
+                          renderCell: (entry) =>
+                            entry.reason ? reasonName(entry.reason) : "—",
+                        },
+                        {
+                          header: "审批人",
+                          key: "approvers",
+                          renderCell: (entry) => (
+                            <div className="row">
+                              {entry.approvers.map((person) => (
+                                <PersonName key={person.id} user={person} />
+                              ))}
+                            </div>
+                          ),
+                        },
+                        {
+                          header: "时间",
+                          key: "at",
+                          renderCell: (entry) => dateTime(entry.at),
+                        },
+                      ]}
+                    />
+                  )}
+                  {(ops || compliance) && !!data.contactLog?.length && (
+                    <DetailTable
+                      key={`contacts:${session.role}:${id}`}
+                      title="沟通记录"
+                      rows={data.contactLog}
+                      columns={[
+                        {
+                          header: "时间",
+                          key: "at",
+                          width: pixel(180),
+                          renderCell: (entry) => dateTime(entry.at),
+                        },
+                        {
+                          header: "方式",
+                          key: "channel",
+                          renderCell: (entry) => channels[entry.channel],
+                        },
+                        { header: "摘要", key: "summary" },
+                        {
+                          header: "记录人",
+                          key: "by",
+                          renderCell: (entry) => <PersonName user={entry.by} />,
+                        },
+                      ]}
+                    />
+                  )}
+                  {orders
+                    .filter(
+                      (order) =>
+                        (risk && order.complianceNote) ||
+                        ((ops || compliance) && order.opsNote),
+                    )
+                    .map((order) => (
+                      <Panel
+                        key={order.id}
+                        title={
+                          <div className="row">
+                            内部备注
+                            <IdText value={order.id} />
+                          </div>
+                        }
+                      >
+                        {risk && order.complianceNote && (
+                          <p>合规：{order.complianceNote}</p>
+                        )}
+                        {(ops || compliance) && order.opsNote && (
+                          <p>运营：{order.opsNote}</p>
+                        )}
+                      </Panel>
+                    ))}
+                  {risk && checks.some((item) => item.note) && (
+                    <Panel title="合规内部备注">
+                      {checks
+                        .filter((item) => item.note)
+                        .map((item) => (
+                          <p key={item.id}>
+                            <strong>{item.title}：</strong>
+                            {item.note}
+                          </p>
+                        ))}
+                    </Panel>
+                  )}
+                  {session.role === "COMPLIANCE_HEAD" &&
+                    orders
+                      .filter(
+                        (order) =>
+                          order.type === "RESTRICTED" &&
+                          (order.restrictedReason || order.caseId),
+                      )
+                      .map((order) => (
+                        <Panel key={order.id} title="受限内容">
+                          <dl className="details-grid progress-details">
+                            {order.restrictedReason && (
+                              <div>
+                                <dt>转受限原因</dt>
+                                <dd>{order.restrictedReason}</dd>
+                              </div>
+                            )}
+                            {order.caseId && (
+                              <div>
+                                <dt>案件编号</dt>
+                                <dd>
+                                  <IdText value={order.caseId} />
+                                </dd>
+                              </div>
+                            )}
+                          </dl>
+                        </Panel>
+                      ))}
+                  {risk && !!data.events?.length && (
+                    <DetailTable
+                      key={`events:${session.role}:${id}`}
+                      title="风险事件"
+                      rows={data.events}
+                      columns={[
+                        {
+                          header: "原因",
+                          key: "reasonCode",
+                          width: pixel(260),
+                          renderCell: (event) => (
+                            <div className="progress-cell-stack">
+                              <span>{reasonName(event.reasonCode)}</span>
+                              {compliance && (
+                                <span
+                                  className={[
+                                    "secondary",
+                                    "progress-code",
+                                  ].join(" ")}
+                                >
+                                  {event.reasonCode}
+                                </span>
+                              )}
+                            </div>
+                          ),
+                        },
+                        {
+                          header: "等级",
+                          key: "severity",
+                          renderCell: (event) =>
+                            severityNames[event.severity] ??
+                            statusLabel(event.severity),
+                        },
+                        { header: "来源", key: "source" },
+                        {
+                          header: "时间",
+                          key: "createdAt",
+                          renderCell: (event) => dateTime(event.createdAt),
+                        },
+                      ]}
+                    />
+                  )}
+                  {(ops || compliance) && !!data.audit?.length && (
+                    <Panel title="审计日志">
+                      <Timeline audit={data.audit} />
+                    </Panel>
+                  )}
+                </div>
+              </div>
+              <aside className="application-context" aria-label="申请处理摘要">
+                <Panel title="当前处理" className="application-current">
+                  <div className="application-current-heading">
+                    <strong>{stages[current]?.title ?? "申请进度"}</strong>
+                    {currentOrder ? (
+                      <StatusBadge status={currentOrder.status} />
+                    ) : (
+                      <Badge>{application.externalStatus}</Badge>
+                    )}
+                  </div>
+                  {currentOrder ? (
+                    <>
+                      <p className="application-current-type">
+                        {orderNames[currentOrder.type]}
+                      </p>
+                      <IdText value={currentOrder.id} />
+                      <dl className="application-current-facts">
+                        <div>
+                          <dt>处理人</dt>
+                          <dd>
+                            {currentOrder.assignee ? (
+                              <PersonName user={currentOrder.assignee} />
+                            ) : (
+                              "待领取"
+                            )}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>SLA 剩余</dt>
+                          <dd>
+                            <Sla order={currentOrder} />
+                          </dd>
+                        </div>
+                      </dl>
+                      <Btn
+                        variant="primary"
+                        onClick={() => navigate(orderPath(currentOrder))}
+                        icon={<ArrowRight size={16} />}
+                        className="application-open-order"
+                      >
+                        打开当前工单
+                      </Btn>
+                      <p className="application-context-hint">
+                        在工作台查看完整要求与处理记录
+                      </p>
+                    </>
+                  ) : (
+                    <p className="application-context-hint">
+                      {internal
+                        ? "当前没有可展示的进行中工单，可在处理记录中查看已有结果"
+                        : "此处展示申请对外进度，进度变化后可刷新查看"}
+                    </p>
+                  )}
+                </Panel>
+                <Panel title="快速查看" className="application-shortcuts">
+                  {risk && checks.length > 0 && (
+                    <button
+                      type="button"
+                      className="application-shortcut"
+                      onClick={() => changeTab("materials", "pending")}
+                    >
+                      <span>待处理检查项</span>
+                      <strong>{pendingChecks.length}</strong>
+                      <ArrowRight size={16} aria-hidden="true" />
+                    </button>
+                  )}
+                  {supplements.length > 0 && (
+                    <button
+                      type="button"
+                      className="application-shortcut"
+                      onClick={() => changeTab("materials")}
+                    >
+                      <span>待补充资料</span>
+                      <strong>{outstandingMaterials}</strong>
+                      <ArrowRight size={16} aria-hidden="true" />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="application-shortcut"
+                    onClick={() => changeTab("people")}
+                  >
+                    <span>人员与联系</span>
+                    <strong>
+                      {data.people?.length || merchant.contacts?.length || 0}
+                    </strong>
+                    <ArrowRight size={16} aria-hidden="true" />
+                  </button>
+                  {internal && (
+                    <button
+                      type="button"
+                      className="application-shortcut"
+                      onClick={() => changeTab("activity")}
+                    >
+                      <span>相关工单</span>
+                      <strong>{orders.length}</strong>
+                      <ArrowRight size={16} aria-hidden="true" />
+                    </button>
+                  )}
+                </Panel>
+              </aside>
+            </div>
             <Confirm
               open={action !== null}
               title={action === "key-merchant" ? "标记重点商户" : "发起复核"}
@@ -1124,17 +1419,14 @@ export default function ApplicationPage() {
         }}
         width={960}
         maxHeight="90dvh"
-        aria-labelledby="application-evidence-title"
       >
-        <div className="stack">
-          <div className="spread">
-            <h2 id="application-evidence-title" className="section-title">
-              {evidenceItem?.title ?? "证据"}
-            </h2>
-            <Btn onClick={() => setEvidenceItem(null)}>关闭</Btn>
-          </div>
-          {evidenceItem && <ApplicationEvidence item={evidenceItem} />}
-        </div>
+        <DialogHeader
+          title={evidenceItem?.title ?? "证据"}
+          onOpenChange={(open) => {
+            if (!open) setEvidenceItem(null);
+          }}
+        />
+        {evidenceItem && <ApplicationEvidence item={evidenceItem} />}
       </Dialog>
     </div>
   );

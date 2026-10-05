@@ -1,4 +1,4 @@
-import type { CheckType } from "./types";
+import type { CheckType, ExternalText } from "./types";
 export const CHECK_LABELS: Record<CheckType, string> = {
   SCREENING_WATCHLIST: "名单筛查",
   SCREENING_MEDIA: "负面新闻",
@@ -126,12 +126,140 @@ export const DECLINE_CONCLUSIONS: Record<string, true> = {
   RELATED_UNACCEPTABLE: true,
 };
 
+const EXTERNAL_TEXT: Record<string, ExternalText> = {
+  "KYC-ID-QUALITY": {
+    zh: "请提供有效身份证件的清晰彩色原图，完整显示四角、姓名和有效期。",
+    en: "Please upload a clear colour image of your valid identity document, showing all four corners, your name and the expiry date.",
+  },
+  "KYC-ID-EXPIRED": {
+    zh: "请提供尚在有效期内的身份证件，完整显示姓名和有效期。",
+    en: "Please upload an unexpired identity document showing your name and the expiry date.",
+  },
+  "KYC-ID-UNSUPPORTED": {
+    zh: "请提供有效护照或补件页面列明的受支持身份证件。",
+    en: "Please provide a valid passport or another supported identity document listed in the secure portal.",
+  },
+  "KYC-SELFIE-QUALITY": {
+    zh: "请本人在光线充足的环境中重新完成自拍和活体核验。",
+    en: "Please complete the selfie and liveness check again in a well-lit setting.",
+  },
+  "DOC-UNUSABLE": {
+    zh: "请上传清晰、完整的商业登记文件，确保登记编号和公司名称可辨认。",
+    en: "Please upload a clear, complete business registration document with a legible registration number and company name.",
+  },
+  "WEB-UNAVAILABLE": {
+    zh: "请提供可公开访问的经营网站链接，并确认商品及联系页面正常加载。",
+    en: "Please provide a publicly accessible business website and ensure its product and contact pages load correctly.",
+  },
+  "WEB-POLICY-MISSING": {
+    zh: "请完善网站退款政策、交易条款和客户服务联系方式，并提供公开页面链接。",
+    en: "Please publish your refund policy, terms of sale and customer service contact details, and provide the public page links.",
+  },
+  "KYC-INCOMPLETE": {
+    zh: "请通知页面列明的相关人员通过安全链接完成身份核验。",
+    en: "Please ask the people listed in the secure portal to complete identity verification using their secure links.",
+  },
+  "KYC-ID-DATA-MISMATCH": {
+    zh: "请确认申请中的姓名及证件号码，并提供显示正确信息的有效证件。",
+    en: "Please confirm the name and document number in your application and provide a valid document showing the correct details.",
+  },
+  "KYC-ID-TAMPER": {
+    zh: "请重新提供董事本人有效身份证件的清晰彩色原图，完整显示四角及有效期。",
+    en: "Please provide a new, clear colour image of the director's valid identity document, showing all four corners and the expiry date.",
+  },
+  "KYC-SELFIE-MISMATCH": {
+    zh: "请证件持有人通过安全链接重新完成本人身份核验。",
+    en: "Please ask the document holder to complete identity verification again using the secure link.",
+  },
+  "KYB-REG-STATUS": {
+    zh: "请提供登记机关近期出具的企业登记摘录，显示当前主体状态。",
+    en: "Please provide a recent company register extract issued by the registration authority showing the current entity status.",
+  },
+  "KYB-REG-NOT-FOUND": {
+    zh: "请确认登记编号，并提供登记机关出具的公司注册证书。",
+    en: "Please confirm your registration number and provide a company registration certificate issued by the registration authority.",
+  },
+  "KYB-REG-NAME": {
+    zh: "请提供最新公司注册证书，显示完整法定名称与公司注册编号。",
+    en: "Please provide a current company registration certificate showing the full legal name and company registration number.",
+  },
+  "KYB-REG-ADDR": {
+    zh: "请提供近三个月的注册地址证明，须完整显示公司名称、地址及签发日期。",
+    en: "Please provide proof of your registered business address issued within the last three months, showing the company name, full address and issue date.",
+  },
+  "KYB-REG-NO-SOURCE": {
+    zh: "请提供登记机关出具的公司登记摘录及可用于查验的资料。",
+    en: "Please provide an official company register extract and the information needed to verify it.",
+  },
+  "KYB-TIN-MISMATCH": {
+    zh: "请确认税号，并提供显示公司法定名称及税号的税务登记文件。",
+    en: "Please confirm your tax identification number and provide a tax registration document showing the legal company name and tax number.",
+  },
+  "KYB-VAT-INVALID": {
+    zh: "请确认增值税登记状态，并提供有效的增值税登记证明。",
+    en: "Please confirm your VAT registration status and provide a valid VAT registration certificate.",
+  },
+  "KYB-VAT-MISMATCH": {
+    zh: "请提供显示公司名称、地址及增值税号的最新增值税登记文件。",
+    en: "Please provide a current VAT registration document showing the company name, address and VAT number.",
+  },
+  "DOC-DATA-MISMATCH": {
+    zh: "请确认申请资料，并提供显示当前公司名称、登记编号及地址的最新文件。",
+    en: "Please confirm your application details and provide current documents showing the company name, registration number and address.",
+  },
+  "KYB-AP-UNDECLARED": {
+    zh: "请提交最新董事名册及签字授权书，列明全部董事与授权签字人。",
+    en: "Please provide a current register of directors and signatory authorisation listing all directors and authorised signatories.",
+  },
+  "KYB-AP-MISSING": {
+    zh: "请提供相关人员的任职或签字授权文件，确认其在公司的职责。",
+    en: "Please provide appointment or signatory authorisation documents confirming the relevant person's role in the company.",
+  },
+  "KYB-UBO-COMPLEX": {
+    zh: "请提供签署的股权结构图及各层股东名册，直至列明最终自然人受益人及持股比例。",
+    en: "Please provide a signed ownership chart and shareholder registers for each ownership level, identifying the ultimate individual beneficial owners and their ownership percentages.",
+  },
+  "CLS-MCC-MISMATCH": {
+    zh: "请提供主要商品或服务、价格及销售方式的说明，并附商品目录或网站链接。",
+    en: "Please describe your main products or services, prices and sales channels, and include a product catalogue or website links.",
+  },
+  "CLS-PROHIBITED-LOW": {
+    zh: "请提供所售商品或服务的完整说明及适用的经营许可。",
+    en: "Please provide a full description of the products or services you sell and any applicable business licences.",
+  },
+  "WEB-MISMATCH": {
+    zh: "请提交已更新的网站退款政策页面与客户服务联系方式，提供公开可访问的页面链接或截图。",
+    en: "Please provide public links or screenshots of your updated website refund policy and customer service contact details.",
+  },
+  "WEB-PROHIBITED": {
+    zh: "请提供当前在售商品目录、产品说明及适用的经营许可。",
+    en: "Please provide your current product catalogue, product descriptions and any applicable business licences.",
+  },
+  "INT-DUPLICATE": {
+    zh: "请确认本次申请的法律主体，并提供公司注册证书及授权联系人信息。",
+    en: "Please confirm the legal entity for this application and provide its registration certificate and authorised contact details.",
+  },
+  "SYS-REPORT-DELAYED": {
+    zh: "请提供登记机关近期出具的企业登记摘录，显示主体存续状态及董事信息。",
+    en: "Please provide a recent official company register extract showing the entity's current status and directors.",
+  },
+  "CH-REJECT-DOCS": {
+    zh: "请提供有效的董事签字授权书，完整显示授权范围、签署人和签署日期。",
+    en: "Please provide a valid director's signatory authorisation showing the scope of authority, signatory and signing date.",
+  },
+  "CH-MORE-INFO": {
+    zh: "请提供近三个月的注册地址证明，须完整显示公司名称、地址及签发日期。",
+    en: "Please provide proof of your registered business address issued within the last three months, showing the company name, full address and issue date.",
+  },
+};
+
 export interface ReasonDefinition {
   name: string;
   disposition: string;
   checkType?: CheckType;
   priority?: "HIGH" | "NORMAL" | "LOW";
   externalCategory: string;
+  externalText: ExternalText;
 }
 const reason = (
   code: string,
@@ -146,6 +274,10 @@ const reason = (
     name,
     disposition,
     externalCategory,
+    externalText: EXTERNAL_TEXT[code] ?? {
+      zh: "您的申请需要进一步审核。如需补充资料，我们将通过登记的联系方式通知您。",
+      en: "Your application requires further review. We will contact you using your registered contact details if additional information is needed.",
+    },
     ...(checkType ? { checkType } : {}),
     ...(priority ? { priority } : {}),
   },

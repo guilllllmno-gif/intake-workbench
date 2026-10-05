@@ -95,6 +95,9 @@ export interface Contact {
   phone: string;
   preferredChannel: "EMAIL" | "SMS" | "PORTAL";
 }
+export type CommunicationLanguage = "zh" | "en";
+export type ExternalText = Record<CommunicationLanguage, string>;
+
 export interface Merchant {
   id: string;
   legalName: string;
@@ -113,11 +116,11 @@ export interface Merchant {
   mccRisk?: string;
   countryRisk?: string;
   isNewEntity?: boolean;
-  language?: "zh" | "en";
 }
 export interface Application {
   id: string;
   merchantId: string;
+  communicationLanguage?: CommunicationLanguage;
   stage:
     | "SUBMITTED"
     | "AUTO_CHECK"
@@ -162,6 +165,7 @@ export interface UploadedFile {
 }
 export interface Evidence {
   id: string;
+  applicationId: string;
   kind: CheckType;
   sourceRef: string;
   generatedAt: string;
@@ -175,7 +179,7 @@ export interface SupplementItem {
   source: "COMPLIANCE" | "CHANNEL" | "AUTO";
   reasonCode?: string;
   checkItemId?: string;
-  externalText: string;
+  externalText: ExternalText;
   actionType: SupplementAction;
   status: "PENDING" | "SENT" | "PROVIDED" | "REJECTED" | "MISSING";
   rejectReason?: string;
@@ -295,6 +299,8 @@ export interface QaReview {
   sampledObjectId: string;
   batchId: string;
   sampledAt: string;
+  snapshotId: string;
+  reviewMode: "APPLICATION" | "CHECK_ITEMS";
   blindConclusions?: Record<string, string>;
   originalConclusions?: Record<string, string>;
   consistent?: boolean;
@@ -372,11 +378,18 @@ export interface Notification {
   workOrderId?: string;
   at: string;
   read: boolean;
-  type?:
-    "ASSIGNMENT" | "NEW_EVIDENCE" | "EXTENSION" | "SLA" | "MAPPING" | "UPDATE";
+  type: "ASSIGNMENT" | "NEW_EVIDENCE" | "EXTENSION" | "SLA";
+  count?: number;
+}
+export interface SearchResult {
+  id: string;
+  kind: "order" | "application";
+  path: string;
+  label: string;
+  status: string;
 }
 export interface NoticePreview {
-  language: "zh" | "en";
+  language: CommunicationLanguage;
   sender: string;
   subject: string;
   salutation: string;
@@ -579,7 +592,7 @@ export type MutationAction =
   | "persona"
   | "reopen-item";
 export interface Store {
-  schema: 5;
+  schema: 6;
   nextId: number;
   users: User[];
   merchants: Merchant[];

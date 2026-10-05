@@ -1,96 +1,96 @@
 import { useEffect, useState } from "react";
-import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
+import {
+  CheckboxList,
+  CheckboxListItem,
+} from "@astryxdesign/core/CheckboxList";
 import { Selector } from "@astryxdesign/core/Selector";
 import { TextArea } from "@astryxdesign/core/TextArea";
-import { REASONS, reasonName, SUPPLEMENT_CONCLUSIONS } from "../catalog";
+import {
+  CHECK_LABELS,
+  CHECK_OPTIONS,
+  REASONS,
+  reasonName,
+  SUPPLEMENT_CONCLUSIONS,
+} from "../catalog";
 import { Confirm } from "../ui";
-import type { CheckItem, OrderDetail, SupplementAction } from "../types";
+import type {
+  CheckItem,
+  ExternalText,
+  OrderDetail,
+  SupplementAction,
+} from "../types";
 import "./evidence.css";
 
 type Need = {
   checkItemId: string;
   reasonCode?: string;
-  externalText: string;
+  externalText: ExternalText;
   actionType: SupplementAction;
   field?: string;
   targetPersonId?: string;
 };
-const templates = {
-  neutral: [
-    "请补充最新的公司登记文件及相关证明材料。",
-    "请核对并补充申请资料，以便继续审核。",
-  ],
-  address: [
-    "请提供最近三个月签发的公司注册地址证明。",
-    "请核对注册地址，并提交显示完整地址的登记文件。",
-  ],
-  identity: ["请相关人员重新完成身份验证。", "请提供有效且清晰的身份证件。"],
-  people: ["请补充关联人员的姓名、职务与持股信息，并完成身份验证。"],
-  ownership: ["请补充完整股权结构图及逐层持股证明，直至最终自然人。"],
-  website: [
-    "请补充网站退款政策、客服联系方式及交易条款。",
-    "请说明网站经营内容与申请业务的对应关系。",
-  ],
-  general: [
-    "请补充最新的公司登记文件及相关证明材料。",
-    "请核对并补充申请资料，以便继续审核。",
-  ],
-};
-function optionsFor(item?: CheckItem) {
-  if (
-    !item ||
-    item.reasonCodes.some(
-      (code) => REASONS[code]?.externalCategory === "不披露",
-    )
-  )
-    return templates.neutral;
-  if (item.reasonCodes.includes("KYB-REG-ADDR")) return templates.address;
-  if (item.checkType === "IDENTITY_MEDIA") return templates.identity;
-  if (item.checkType === "ASSOCIATED_PERSONS") return templates.people;
-  if (item.checkType === "OWNERSHIP") return templates.ownership;
-  if (item.checkType === "WEBSITE") return templates.website;
-  return templates.general;
-}
+
 export default function SupplementNeedsDialog({
   data,
+  currentCheckItemId,
   open,
   busy,
   onClose,
   onSubmit,
 }: {
   data: OrderDetail;
+  currentCheckItemId?: string;
   open: boolean;
   busy: boolean;
   onClose: () => void;
   onSubmit: (payload: { items: Need[]; noteToOps: string }) => Promise<boolean>;
 }) {
   const checks = data.workOrder.checkItems ?? [];
+  const submitted = new Set(
+    (data.supplements ?? [])
+      .filter(
+        (order) =>
+          !["DONE", "CLOSED_NO_RESPONSE", "WITHDRAWN"].includes(order.status),
+      )
+      .flatMap((order) => (order.items ?? []).map((item) => item.checkItemId)),
+  );
+  const eligible = checks.filter(
+    (item) =>
+      !submitted.has(item.id) &&
+      CHECK_OPTIONS[item.checkType].some(
+        (option) => SUPPLEMENT_CONCLUSIONS[option.value],
+      ) &&
+      (item.status === "PENDING" ||
+        !!SUPPLEMENT_CONCLUSIONS[item.conclusion ?? ""]),
+  );
   const [needs, setNeeds] = useState<Need[]>([]);
   const [noteToOps, setNoteToOps] = useState("");
   const [error, setError] = useState("");
-  const [manualId, setManualId] = useState<string>();
+  const language = data.application.communicationLanguage ?? "en";
+  const makeNeed = (item: CheckItem): Need => ({
+    checkItemId: item.id,
+    reasonCode: item.reasonCodes[0],
+    externalText: { ...REASONS[item.reasonCodes[0]].externalText },
+    actionType: item.checkType === "IDENTITY_MEDIA" ? "REVERIFY" : "UPLOAD",
+    targetPersonId:
+      item.checkType === "IDENTITY_MEDIA" && data.people?.length === 1
+        ? data.people[0].id
+        : undefined,
+  });
   useEffect(() => {
     if (!open) return;
     setNeeds(
-      checks
+      eligible
         .filter(
-          (item) => item.conclusion && SUPPLEMENT_CONCLUSIONS[item.conclusion],
+          (item) =>
+            item.id === currentCheckItemId ||
+            !!SUPPLEMENT_CONCLUSIONS[item.conclusion ?? ""],
         )
-        .map((item) => ({
-          checkItemId: item.id,
-          reasonCode: item.reasonCodes[0],
-          externalText: optionsFor(item)[0],
-          actionType: item.conclusion === "REVERIFY" ? "REVERIFY" : "UPLOAD",
-          targetPersonId:
-            item.conclusion === "REVERIFY" && data.people?.length === 1
-              ? data.people[0].id
-              : undefined,
-        })),
+        .map(makeNeed),
     );
     setNoteToOps("");
     setError("");
-    setManualId(undefined);
   }, [open]);
   const patch = (index: number, value: Partial<Need>) =>
     setNeeds((current) =>
@@ -106,18 +106,22 @@ export default function SupplementNeedsDialog({
       reversible="通知发送前可由运营核对文案；已提交的需求及处理记录保留。"
       confirmLabel="确认提补件需求"
       busy={busy}
-      confirmDisabled={!needs.length}
       onClose={onClose}
       onConfirm={async () => {
+        if (!needs.length) {
+          setError("请选择至少一个可补件的检查项。");
+          return;
+        }
         if (
           needs.some(
             (need) =>
-              !need.externalText ||
+              !need.externalText.zh.trim() ||
+              !need.externalText.en.trim() ||
               (need.actionType === "REVERIFY" && !need.targetPersonId) ||
               (need.actionType === "CONFIRM_FIELD" && !need.field),
           )
         ) {
-          setError("请补全每项的对外模板、需验证人员或需确认字段。");
+          setError("请补全每项的中英文对外文案、需验证人员或需确认字段。");
           return;
         }
         if (
@@ -126,28 +130,64 @@ export default function SupplementNeedsDialog({
           setError("给运营的说明不得包含筛查、名单或可疑相关内容。");
           return;
         }
+        setError("");
         if (await onSubmit({ items: needs, noteToOps: noteToOps.trim() }))
           onClose();
       }}
     >
       <div className="ev-supplement-needs">
+        <CheckboxList
+          label="可补件的检查项"
+          value={needs.map((need) => need.checkItemId)}
+          isDisabled={busy}
+          onChange={(ids) =>
+            setNeeds(
+              eligible
+                .filter((item) => ids.includes(item.id))
+                .map(
+                  (item) =>
+                    needs.find((need) => need.checkItemId === item.id) ??
+                    makeNeed(item),
+                ),
+            )
+          }
+        >
+          {eligible.map((item) => (
+            <CheckboxListItem
+              key={item.id}
+              value={item.id}
+              label={`${CHECK_LABELS[item.checkType]} · ${item.reasonCodes.map(reasonName).join("、")}${item.id === currentCheckItemId ? "（当前项）" : ""}`}
+            />
+          ))}
+        </CheckboxList>
+        {!eligible.length && (
+          <p className="ev-secondary">本单暂无可新增的补件检查项</p>
+        )}
         {needs.map((need, index) => {
-          const item = checks.find((check) => check.id === need.checkItemId);
+          const item = checks.find((check) => check.id === need.checkItemId)!;
           return (
             <Card padding={4} key={need.checkItemId}>
               <h3 className="ev-card-title">
-                {item?.reasonCodes.map(reasonName).join("、") || "补充材料"}
+                {item.reasonCodes.map(reasonName).join("、")}
               </h3>
               <div className="ev-form">
-                <Selector
-                  label="对外文案模板"
+                <TextArea
+                  label="对外文案（中文）"
                   isRequired
-                  value={need.externalText}
-                  options={optionsFor(item).map((value) => ({
-                    value,
-                    label: value,
-                  }))}
-                  onChange={(externalText) => patch(index, { externalText })}
+                  value={need.externalText.zh}
+                  rows={2}
+                  onChange={(zh) =>
+                    patch(index, { externalText: { ...need.externalText, zh } })
+                  }
+                />
+                <TextArea
+                  label="对外文案（英文）"
+                  isRequired
+                  value={need.externalText.en}
+                  rows={2}
+                  onChange={(en) =>
+                    patch(index, { externalText: { ...need.externalText, en } })
+                  }
                 />
                 <Selector
                   label="商户操作"
@@ -193,44 +233,15 @@ export default function SupplementNeedsDialog({
                   />
                 )}
               </div>
+              <div className="ev-external-preview" aria-label="商户文案预览">
+                <strong>
+                  商户将看到（{language === "zh" ? "中文" : "英文"}）
+                </strong>
+                <p lang={language}>{need.externalText[language]}</p>
+              </div>
             </Card>
           );
         })}
-        <div className="ev-add-need">
-          <Selector
-            label="添加检查项的补件需求"
-            value={manualId}
-            placeholder="选择检查项"
-            options={checks
-              .filter(
-                (item) => !needs.some((need) => need.checkItemId === item.id),
-              )
-              .map((item) => ({
-                value: item.id,
-                label: item.reasonCodes.map(reasonName).join("、"),
-              }))}
-            onChange={setManualId}
-          />
-          <Button
-            label="添加"
-            variant="secondary"
-            isDisabled={!manualId}
-            onClick={() => {
-              const item = checks.find((check) => check.id === manualId);
-              if (!item) return;
-              setNeeds((current) => [
-                ...current,
-                {
-                  checkItemId: item.id,
-                  reasonCode: item.reasonCodes[0],
-                  externalText: optionsFor(item)[0],
-                  actionType: "UPLOAD",
-                },
-              ]);
-              setManualId(undefined);
-            }}
-          />
-        </div>
         <TextArea
           label="给运营的说明"
           description="不得写入筛查、名单或可疑相关内容。"
@@ -243,9 +254,6 @@ export default function SupplementNeedsDialog({
           <p role="alert" className="ev-error">
             {error}
           </p>
-        )}
-        {!needs.length && (
-          <p className="ev-secondary">请选择需补充材料的检查项。</p>
         )}
       </div>
     </Confirm>

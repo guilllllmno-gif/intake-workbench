@@ -1,4 +1,4 @@
-import { useEffect, useState, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import {
   createBrowserRouter,
   createHashRouter,
@@ -27,7 +27,7 @@ import {
   DropdownMenuItem,
   DropdownMenuDivider,
 } from "@astryxdesign/core/DropdownMenu";
-import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { Dialog } from "@astryxdesign/core/Dialog";
 import { Popover } from "@astryxdesign/core/Popover";
 import { Theme } from "@astryxdesign/core/theme";
 import { InternationalizationProvider } from "@astryxdesign/core/i18n";
@@ -64,10 +64,10 @@ import {
   orderPath,
   sessionFor,
 } from "./access";
-import { Confirm, Empty, LoadState } from "./ui";
-import { dateTime } from "./format";
+import { Confirm, DialogHeader, Empty, LoadState } from "./ui";
+import { dateTime, statusLabel } from "./format";
 import { workbenchTheme } from "./theme";
-import type { QueueView, Session } from "./types";
+import type { QueueView, SearchResult, Session } from "./types";
 import QueuePage from "./pages/QueuePage";
 import ReviewPage from "./pages/ReviewPage";
 import ApprovalPage from "./pages/ApprovalPage";
@@ -101,7 +101,7 @@ interface RecentView {
 function recentViews(session: Session): RecentView[] {
   try {
     const value = JSON.parse(
-      localStorage.getItem(`intake-recent-v05:${session.userId}`) ?? "[]",
+      localStorage.getItem(`intake-recent-v06:${session.userId}`) ?? "[]",
     );
     return Array.isArray(value)
       ? value
@@ -124,6 +124,9 @@ function Shell() {
   const location = useLocation();
   const navigate = useNavigate();
   const rootHref = useHref("/");
+  const merchantRoute =
+    location.pathname === "/merchant" ||
+    location.pathname.startsWith("/merchant/");
   const notice = useNotice();
   const [collapsed, setCollapsed] = useState(false);
   const [guide, setGuide] = useState(false);
@@ -131,6 +134,7 @@ function Shell() {
   const [loggedOut, setLoggedOut] = useState(false);
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const searchVersion = useRef(0);
   const [recent, setRecent] = useState<RecentView[]>(() =>
     recentViews(session),
   );
@@ -139,18 +143,28 @@ function Shell() {
   const menu = MENUS[session.role];
   const { data: counts } = useAsync<Partial<Record<QueueView, number>>>(
     () =>
-      session.role === "MERCHANT"
+      session.role === "MERCHANT" || merchantRoute
         ? Promise.resolve({})
         : api.actionCounts(session),
-    [session.userId, session.role, revision],
+    [session.userId, session.role, merchantRoute, revision],
   );
   const notificationResource = useAsync(
     () =>
-      session.role === "MERCHANT"
+      session.role === "MERCHANT" || merchantRoute
         ? Promise.resolve([])
         : api.notifications(session),
-    [session.userId, revision],
+    [session.userId, session.role, merchantRoute, revision],
   );
+  const searchResource = useAsync<SearchResult[]>(
+    () =>
+      session.role === "MERCHANT" || merchantRoute || !search.trim()
+        ? Promise.resolve([])
+        : api.search(search.trim(), session),
+    [search, session.userId, session.role, merchantRoute, revision],
+  );
+  useEffect(() => {
+    searchVersion.current++;
+  }, [search, session.userId, session.role]);
   useEffect(() => {
     const refresh = () => setRevision((n) => n + 1);
     window.addEventListener("workbench:updated", refresh);
@@ -190,7 +204,7 @@ function Shell() {
           ...recentViews(session).filter((view) => view.id !== id),
         ].slice(0, 5);
         localStorage.setItem(
-          `intake-recent-v05:${session.userId}`,
+          `intake-recent-v06:${session.userId}`,
           JSON.stringify(views),
         );
         setRecent(views);
@@ -222,24 +236,23 @@ function Shell() {
     });
     if (window.dispatchEvent(event)) proceed();
   };
+  const openSearchResult = (path: string) => {
+    navigate(path);
+    setSearchOpen(false);
+    setSearch("");
+  };
   const searchAll = async (value: string) => {
     const term = value.trim();
     if (!term) return;
-    const id = term.toUpperCase();
+    const version = searchVersion.current;
     try {
-      if (/^WO-[A-Z0-9-]+$/.test(id)) {
-        const data = await api.getOrder(id, session);
-        navigate(orderPath(data.workOrder));
-      } else if (/^APP-\d+$/.test(id)) {
-        await api.getApplication(id, session);
-        navigate(`/applications/${id}`);
-      } else {
-        navigate(`/applications?search=${encodeURIComponent(term)}`);
-      }
-      setSearchOpen(false);
-      setSearch("");
+      const matches = await api.search(term, session);
+      if (version !== searchVersion.current) return;
+      if (matches[0]) openSearchResult(matches[0].path);
+      else setSearchOpen(true);
     } catch (error) {
-      notice((error as Error).message);
+      if (version === searchVersion.current)
+        notice(error instanceof Error ? error.message : "搜索失败，请重试");
     }
   };
   const navigateLink = (event: MouseEvent, path: string) => {
@@ -270,6 +283,13 @@ function Shell() {
             : location.pathname.startsWith("/qa/")
               ? "qa"
               : undefined;
+  if (merchantRoute)
+    return (
+      <Routes>
+        <Route path="/merchant" element={<MerchantPage />} />
+        <Route path="/merchant/:id" element={<MerchantPage />} />
+      </Routes>
+    );
   const header = (
     <TopNav
       className="workspace-topnav"
@@ -321,7 +341,10 @@ function Shell() {
               startIcon={Search}
               placeholder="搜索商户、申请号或工单号"
               value={search}
-              onChange={setSearch}
+              onChange={(value) => {
+                setSearch(value);
+                setSearchOpen(true);
+              }}
               onEnter={() => void searchAll(search)}
               hasClear
             />
@@ -329,10 +352,47 @@ function Shell() {
               <div
                 className="recent-search"
                 role="region"
-                aria-label="最近浏览"
+                aria-label={search.trim() ? "搜索结果" : "最近浏览"}
               >
-                <h3>最近浏览</h3>
-                {recent.length ? (
+                <h3>
+                  {search.trim()
+                    ? `匹配结果${searchResource.data ? ` · ${searchResource.data.length}` : ""}`
+                    : "最近浏览"}
+                </h3>
+                {search.trim() ? (
+                  searchResource.loading ? (
+                    <p className="secondary" role="status">
+                      正在搜索
+                    </p>
+                  ) : searchResource.error ? (
+                    <p className="search-error" role="alert">
+                      {searchResource.error.message}
+                    </p>
+                  ) : searchResource.data?.length ? (
+                    searchResource.data.map((item) => (
+                      <Button
+                        key={`${item.kind}:${item.id}`}
+                        label={`${item.id} · ${item.label} · ${statusLabel(item.status)}`}
+                        variant="ghost"
+                        width="100%"
+                        className="recent-search-item search-result"
+                        onClick={() => openSearchResult(item.path)}
+                      >
+                        <span className="search-result-copy">
+                          <strong>{item.id}</strong>
+                          <span>{item.label}</span>
+                        </span>
+                        <span className="search-result-status">
+                          {statusLabel(item.status)}
+                        </span>
+                      </Button>
+                    ))
+                  ) : (
+                    <p className="secondary" role="status">
+                      没有匹配的工单或申请
+                    </p>
+                  )
+                ) : recent.length ? (
                   recent.map((item) => (
                     <Button
                       key={item.id}
@@ -341,7 +401,7 @@ function Shell() {
                       size="sm"
                       width="100%"
                       className="recent-search-item"
-                      onClick={() => void searchAll(item.id)}
+                      onClick={() => openSearchResult(item.path)}
                     />
                   ))
                 ) : (
@@ -356,7 +416,7 @@ function Shell() {
         <div className="workspace-header-actions">
           <span className="environment-tag">
             <span className="environment-dot" />
-            UAT · 原型
+            测试环境
           </span>
           <span className="header-timezone">
             {Intl.DateTimeFormat().resolvedOptions().timeZone}
@@ -408,18 +468,32 @@ function Shell() {
                             variant="ghost"
                             size="sm"
                             onClick={async () => {
-                              if (!n.workOrderId) return;
                               try {
-                                const detail = await api.getOrder(
-                                  n.workOrderId,
-                                  session,
-                                );
+                                let target = homePath(session.role);
+                                if (n.workOrderId) {
+                                  const detail = await api.getOrder(
+                                    n.workOrderId,
+                                    session,
+                                  );
+                                  target = orderPath(detail.workOrder);
+                                } else if (n.type === "SLA") {
+                                  target = [
+                                    "COMPLIANCE_REVIEWER",
+                                    "COMPLIANCE_SENIOR",
+                                  ].includes(session.role)
+                                    ? "/queue/review?tab=mine"
+                                    : session.role === "COMPLIANCE_HEAD"
+                                      ? "/queue/restricted"
+                                      : session.role === "OPS_LEAD"
+                                        ? "/queue/team"
+                                        : homePath(session.role);
+                                }
                                 await api.markNotificationsRead(
                                   [n.id],
                                   session,
                                 );
                                 setNotificationsOpen(false);
-                                navigate(orderPath(detail.workOrder));
+                                navigate(target);
                               } catch (failure) {
                                 notice(
                                   failure instanceof Error
@@ -458,7 +532,7 @@ function Shell() {
             alignment="end"
             menuWidth={340}
             button={{
-              label: `演示账号 · ${ROLE_LABELS[session.role]} · ${session.name}`,
+              label: `${ROLE_LABELS[session.role]} · ${session.name}`,
               variant: "ghost",
               size: "md",
               icon: <UserRound size={16} />,
@@ -490,7 +564,7 @@ function Shell() {
               icon={LogOut}
               label="退出"
               onClick={() => {
-                localStorage.removeItem("intake-session-v05");
+                localStorage.removeItem("intake-session-v06");
                 setLoggedOut(true);
               }}
             />
@@ -520,7 +594,6 @@ function Shell() {
         <Route path="/applications" element={<ApplicationsPage />} />
         <Route path="/applications/:id" element={<ApplicationPage />} />
         <Route path="/metrics" element={<MetricsPage />} />
-        <Route path="/merchant/:id" element={<MerchantPage />} />
         <Route
           path="*"
           element={
@@ -630,7 +703,7 @@ function Shell() {
         <DialogHeader title="原型说明" onOpenChange={setGuide} />
         <div className="guide-content">
           <p className="secondary">
-            当前为 v0.5
+            当前为 v0.6
             可交互原型，使用浏览器本地数据和模拟接口，不连接生产系统。可切换角色和登录用户；双人确认必须使用两个不同账号。
           </p>
           <div className="scenario-list">
@@ -665,9 +738,9 @@ function Shell() {
         open={reset}
         title="重置数据"
         description="清除本版本操作记录，恢复全部初始业务场景。"
-        merchant="不影响生产数据。"
-        sales="不影响生产数据。"
-        reversible="本版本修改不可恢复。"
+        merchant="不影响生产数据"
+        sales="不影响生产数据"
+        reversible="本版本修改不可恢复"
         confirmLabel="确认重置"
         danger
         onClose={() => setReset(false)}
@@ -693,7 +766,7 @@ export default function App() {
   return (
     <Theme theme={workbenchTheme} mode="light">
       <InternationalizationProvider locale="zh-CN" messages={{ "zh-CN": zhCN }}>
-        <LayerProvider toast={{ position: "topEnd", maxVisible: 3 }}>
+        <LayerProvider toast={{ position: "bottomEnd", maxVisible: 3 }}>
           <Providers>
             <RouterProvider router={router} />
           </Providers>

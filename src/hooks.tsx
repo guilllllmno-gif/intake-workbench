@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useToast } from "@astryxdesign/core/Toast";
 import { Button } from "@astryxdesign/core/Button";
 import { DEFAULT_SESSION, USERS, homePath, orderPath } from "./access";
@@ -27,7 +27,7 @@ export function Providers({ children }: { children: ReactNode }) {
   const [session, setValue] = useState<Session>(() => {
     try {
       const stored = JSON.parse(
-        localStorage.getItem("intake-session-v05") || "null",
+        localStorage.getItem("intake-session-v06") || "null",
       );
       return stored &&
         USERS.some(
@@ -47,7 +47,7 @@ export function Providers({ children }: { children: ReactNode }) {
     [showToast],
   );
   const setSession = useCallback((s: Session) => {
-    localStorage.setItem("intake-session-v05", JSON.stringify(s));
+    localStorage.setItem("intake-session-v06", JSON.stringify(s));
     setValue(s);
   }, []);
   return (
@@ -71,7 +71,7 @@ export interface QueueContext {
 export function getQueueContext(session: Session): QueueContext | null {
   try {
     const saved = JSON.parse(
-      sessionStorage.getItem(`intake-queue-v05:${session.userId}`) ?? "null",
+      sessionStorage.getItem(`intake-queue-v06:${session.userId}`) ?? "null",
     );
     return saved &&
       typeof saved.url === "string" &&
@@ -86,7 +86,7 @@ export function getQueueContext(session: Session): QueueContext | null {
 }
 export function saveQueueContext(session: Session, context: QueueContext) {
   sessionStorage.setItem(
-    `intake-queue-v05:${session.userId}`,
+    `intake-queue-v06:${session.userId}`,
     JSON.stringify(context),
   );
 }
@@ -120,24 +120,45 @@ export function useQueueFlow() {
   };
   return { queueUrl, next, busy };
 }
+export function useDetailView(
+  defaultView: string,
+  allowedViews: readonly string[],
+  queryKey = "view",
+): [string, (next: string) => void] {
+  const [params, setParams] = useSearchParams();
+  const requested = params.get(queryKey);
+  const view =
+    requested && allowedViews.includes(requested) ? requested : defaultView;
+  const setView = (nextView: string) => {
+    setParams((previous) => {
+      const next = new URLSearchParams(previous);
+      if (nextView === defaultView) next.delete(queryKey);
+      else next.set(queryKey, nextView);
+      return next;
+    });
+  };
+  return [view, setView];
+}
+
 export function useAsync<T>(loader: () => Promise<T>, deps: unknown[]) {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<Error | null>(null);
   const [tick, setTick] = useState(0);
   const reload = useCallback(() => setTick((n) => n + 1), []);
   useEffect(() => {
     let alive = true;
     setData(null);
     setLoading(true);
-    setError("");
+    setError(null);
     Promise.resolve()
       .then(loader)
       .then((v) => {
         if (alive) setData(v);
       })
       .catch((e) => {
-        if (alive) setError(e.message || "加载失败，请重试");
+        if (alive)
+          setError(e instanceof Error ? e : new Error("加载失败，请重试"));
       })
       .finally(() => {
         if (alive) setLoading(false);

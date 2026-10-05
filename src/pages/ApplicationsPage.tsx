@@ -300,6 +300,7 @@ function ApplicationResults({
               label="显示列"
               isLabelHidden
               value={activeColumnKeys}
+              formatValue={(items) => `已选 ${items.length} 列`}
               onChange={(keys) =>
                 setActiveColumnKeys([
                   "C03",

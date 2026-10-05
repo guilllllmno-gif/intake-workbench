@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 import { api, ApiError } from "./api";
 import { sessionFor, USERS } from "./access";
+import { createSeed } from "./seed";
 import type {
   CheckItem,
   MutationAction,
   OrderDetail,
   Session,
+  Store,
   UploadedFile,
 } from "./types";
 
@@ -23,6 +25,7 @@ const secondApprover = session("u_3002");
 const merchant = session("u_5001");
 const sales = session("u_4001");
 const wo = (number: number) => `WO-20261005-${String(number).padStart(4, "0")}`;
+const s1Conclusions = { overall: "APPROVED" };
 const file = (name = "Address_confirmation.pdf"): UploadedFile => ({
   id: `file-${name}`,
   name,
@@ -86,7 +89,10 @@ async function request(id: string, check: CheckItem, actor = reviewer) {
         {
           checkItemId: check.id,
           reasonCode: check.reasonCodes[0],
-          externalText: "请提供当前注册地址的有效证明。",
+          externalText: {
+            zh: "请提供当前注册地址的有效证明。",
+            en: "Provide valid proof of your current registered address.",
+          },
           actionType: "UPLOAD",
         },
       ],
@@ -190,6 +196,27 @@ async function rejectUnchanged(
   );
 }
 
+async function withStoredSeed(store: Store, run: () => Promise<void>) {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const values = new Map([["intake-workbench-v06", JSON.stringify(store)]]);
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        values.set(key, value);
+      },
+    },
+  });
+  try {
+    await run();
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+    api.reset();
+  }
+}
+
 beforeEach(() => api.reset());
 
 test("S1 blind QA hides the original decision until independent submission, then closes without correction", async () => {
@@ -200,7 +227,7 @@ test("S1 blind QA hides the original decision until independent submission, then
   const compared = await act(
     wo(1),
     "qa",
-    { blindConclusions: { overall: "APPROVED" } },
+    { blindConclusions: s1Conclusions },
     senior,
   );
   assert.equal(compared.workOrder.status, "COMPARE");
@@ -460,7 +487,10 @@ test("S7 channel mapping, merchant material and resubmission return to the chann
     {
       items: [
         {
-          externalText: "请提供最近三个月的银行账户证明。",
+          externalText: {
+            zh: "请提供最近三个月的银行账户证明。",
+            en: "Provide bank account documentation issued within the last three months.",
+          },
           actionType: "UPLOAD",
         },
       ],
@@ -539,7 +569,10 @@ test("S9 quality return requests only the rejected item and preserves the accept
     returned.workOrder.items!.find((entry) => entry.id === good.id),
     acceptedBefore,
   );
-  const portal = await api.getOrder("MT-S9", merchant);
+  const portal = await api.getOrder(
+    returned.workOrder.merchantToken!,
+    merchant,
+  );
   const actionable = portal.workOrder.items!.filter((entry) => !entry.checked);
   assert.deepEqual(
     actionable.map((entry) => entry.id),
@@ -709,7 +742,17 @@ test("same-application compliance and channel requests merge into one notificati
   await act(
     wo(393),
     "channel-supplement",
-    { items: [{ externalText: "请提供银行账户证明。", actionType: "UPLOAD" }] },
+    {
+      items: [
+        {
+          externalText: {
+            zh: "请提供银行账户证明。",
+            en: "Provide proof of your bank account.",
+          },
+          actionType: "UPLOAD",
+        },
+      ],
+    },
     ops,
   );
   const supplement = await supplementFor("APP-88392");
@@ -847,7 +890,7 @@ for (const transition of [
     id: wo(1),
     actor: senior,
     action: "qa",
-    payload: { blindConclusions: { overall: "APPROVED" } },
+    payload: { blindConclusions: s1Conclusions },
   },
   {
     name: "unreviewed material cannot complete a supplement",
@@ -977,7 +1020,17 @@ test("submitted approval and channel-wait states cannot be reprocessed by their 
   await rejectUnchanged(
     wo(393),
     "channel-supplement",
-    { items: [{ externalText: "请提供地址证明。", actionType: "UPLOAD" }] },
+    {
+      items: [
+        {
+          externalText: {
+            zh: "请提供地址证明。",
+            en: "Provide proof of address.",
+          },
+          actionType: "UPLOAD",
+        },
+      ],
+    },
     ops,
   );
 });
@@ -1103,23 +1156,12 @@ test("personal action count excludes public work and decreases when work waits f
   );
 });
 
-test("German merchant notice is localized and first-send time starts the seven-day deadline", async () => {
+test("first merchant notice starts a seven-day deadline that reminders do not extend", async () => {
   const review = await claim(wo(11), reviewer);
   await request(wo(11), item(review));
   const supplement = await supplementFor(review.application.id);
   assert.equal(supplement.workOrder.dueAt, undefined);
-  const preview = await api.previewNotice(
-    supplement.workOrder.id,
-    { channel: "EMAIL" },
-    ops,
-  );
-  assert.equal(preview.language, "en");
-  assert.doesNotMatch(
-    preview.body + preview.subject + preview.salutation,
-    /[\u4e00-\u9fff]/,
-  );
-  assert.equal(new URL(preview.link).hostname, "merchant.futurepay.example");
-  assert.match(preview.sender, /@/);
+  await api.previewNotice(supplement.workOrder.id, { channel: "EMAIL" }, ops);
   assert.equal(
     (await api.getOrder(supplement.workOrder.id, ops)).workOrder.dueAt,
     undefined,
@@ -1177,4 +1219,319 @@ test("undo refuses another actor, expiry and a superseding mutation without losi
     (await api.getOrder(wo(9), ops)).workOrder.opsNote,
     "商户已承诺补交原件",
   );
+});
+
+test("QA uses the complete sampled evidence, keeps decisions blind, and audits access to sampled media", async () => {
+  const store = createSeed();
+  const qaOrder = store.orders.find((order) => order.id === wo(1))!;
+  const sampled = store.snapshots[store.qa[qaOrder.id].snapshotId];
+  const frozen = structuredClone(sampled);
+  for (const evidence of store.evidence.filter(
+    (e) => e.applicationId === qaOrder.applicationId,
+  ))
+    evidence.fields = { laterChange: "not part of the sample" };
+  qaOrder.checkItems = [];
+  store.applications.find((a) => a.id === qaOrder.applicationId)!.autoDecision =
+    "DECLINED";
+  await withStoredSeed(store, async () => {
+    const blind = await claim(qaOrder.id, senior);
+    assert.equal(blind.qa?.reviewMode, "APPLICATION");
+    assert.deepEqual(
+      blind.evidence?.map((e) => e.id),
+      frozen.evidence.map((e) => e.id),
+    );
+    for (const evidence of blind.evidence!)
+      assert.deepEqual(
+        evidence.fields,
+        frozen.evidence.find((e) => e.id === evidence.id)!.fields,
+      );
+    assert.deepEqual(blind.workOrder.checkItems, []);
+    assert.deepEqual(frozen.checkItems, []);
+    assert.deepEqual(
+      frozen.evidence.map((e) => e.id).sort(),
+      store.evidence
+        .filter((e) => e.applicationId === qaOrder.applicationId)
+        .map((e) => e.id)
+        .sort(),
+    );
+    assert.equal(blind.application.autoDecision, undefined);
+    assert.equal(blind.application.decision, undefined);
+    assert.equal(blind.application.externalStatus, "审核中");
+    assert.equal(blind.qa?.originalConclusions, undefined);
+    assert.equal(blind.qa?.snapshotId, undefined);
+    await assert.rejects(
+      api.snapshot(frozen.id, senior),
+      (error: unknown) => error instanceof ApiError && error.status === 403,
+    );
+    const document = frozen.evidence.find((e) => e.mediaRefs.length)!;
+    const media = document.mediaRefs[0];
+    const projected = blind.evidence!.find((e) => e.id === document.id)!
+      .mediaRefs[0];
+    assert.equal(projected.url, undefined);
+    assert.equal(projected.file, undefined);
+    const opened = await act(
+      qaOrder.id,
+      "media",
+      { evidenceId: document.id, mediaId: media.id },
+      senior,
+    );
+    assert.deepEqual(
+      opened.evidence!.find((e) => e.id === document.id)!.mediaRefs[0],
+      media,
+    );
+    const other = store.evidence.find(
+      (e) => e.applicationId !== qaOrder.applicationId && e.mediaRefs.length,
+    )!;
+    await assert.rejects(
+      act(
+        qaOrder.id,
+        "media",
+        { evidenceId: other.id, mediaId: other.mediaRefs[0].id },
+        senior,
+      ),
+    );
+    await rejectUnchanged(
+      qaOrder.id,
+      "qa",
+      { blindConclusions: { overall: "APPROVED", extra: "NORMAL" } },
+      senior,
+    );
+    await rejectUnchanged(
+      qaOrder.id,
+      "qa",
+      { blindConclusions: { overall: "NORMAL" } },
+      senior,
+    );
+    const compared = await act(
+      qaOrder.id,
+      "qa",
+      { blindConclusions: s1Conclusions },
+      senior,
+    );
+    assert.equal(compared.qa?.consistent, true);
+    assert.deepEqual(compared.qa?.originalConclusions, s1Conclusions);
+    assert.ok(compared.audit?.some((entry) => entry.action === "media"));
+    assert.deepEqual(
+      (await api.snapshot(frozen.id, senior)).evidence.map((e) => e.fields),
+      frozen.evidence.map((e) => e.fields),
+    );
+  });
+});
+
+test("registered correspondence language and selected contact control bilingual custom notices", async () => {
+  const store = createSeed();
+  const workOrder = store.orders.find((order) => order.id === wo(9))!;
+  const application = store.applications.find(
+    (a) => a.id === workOrder.applicationId,
+  )!;
+  const merchantRecord = store.merchants.find(
+    (m) => m.id === application.merchantId,
+  )!;
+  application.communicationLanguage = "zh";
+  merchantRecord.country = "GB";
+  merchantRecord.contacts!.push({
+    name: "王珂",
+    email: "second.contact@example.test",
+    phone: "+442079460002",
+    preferredChannel: "EMAIL",
+  });
+  workOrder.status = "TO_SEND";
+  for (const item of workOrder.items!) {
+    item.status = "PENDING";
+    item.checked = false;
+    item.externalText = {
+      zh: "请补充包含门牌号的地址文件。",
+      en: "Provide address documentation including the building number.",
+    };
+  }
+  await withStoredSeed(store, async () => {
+    const preview = await api.previewNotice(
+      workOrder.id,
+      { channel: "EMAIL", recipient: "second.contact@example.test" },
+      ops,
+    );
+    assert.equal(preview.language, "zh");
+    assert.ok(preview.salutation.includes("王珂"));
+    assert.ok(!preview.salutation.includes(merchantRecord.legalName));
+    assert.ok(preview.body.includes(workOrder.items![0].externalText.zh));
+    assert.ok(!preview.body.includes(workOrder.items![0].externalText.en));
+    const portal = await api.getOrder(workOrder.merchantToken!, merchant);
+    assert.equal(portal.application.communicationLanguage, preview.language);
+  });
+  delete application.communicationLanguage;
+  merchantRecord.country = "HK";
+  await withStoredSeed(store, async () => {
+    const preview = await api.previewNotice(
+      workOrder.id,
+      { channel: "EMAIL", recipient: "second.contact@example.test" },
+      ops,
+    );
+    assert.equal(preview.language, "en");
+    assert.ok(preview.salutation.includes("王珂"));
+    assert.ok(preview.body.includes(workOrder.items![0].externalText.en));
+    const sent = await act(
+      workOrder.id,
+      "notices",
+      { channel: "EMAIL", recipient: preview.recipient },
+      ops,
+    );
+    assert.equal(sent.workOrder.status, "WAITING_MERCHANT");
+  });
+});
+
+test("merchant access accepts issued random tokens and denies predictable or tampered links", async () => {
+  const seeded = await api.getOrder(wo(9), ops);
+  const issued = seeded.workOrder.merchantToken!;
+  assert.match(
+    issued,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+  );
+  assert.equal(
+    (await api.getOrder(issued, merchant)).application.id,
+    seeded.application.id,
+  );
+  const review = await claim(wo(3), reviewer);
+  await request(wo(3), item(review, "KYB-REG-ADDR"));
+  const generated = await supplementFor(review.application.id);
+  assert.notEqual(generated.workOrder.merchantToken, issued);
+  assert.equal(
+    (await api.getOrder(generated.workOrder.merchantToken!, merchant))
+      .application.id,
+    review.application.id,
+  );
+  for (const token of [
+    "MT-S9",
+    "MT-230",
+    `${issued.slice(0, -1)}${issued.endsWith("0") ? "1" : "0"}`,
+  ])
+    await assert.rejects(
+      api.getOrder(token, merchant),
+      (error: unknown) => error instanceof ApiError && error.status === 404,
+    );
+});
+
+test("SLA notifications aggregate actionable work and resolve when work waits for the merchant", async () => {
+  const store = createSeed();
+  const future = new Date(Date.now() + 10 * 86400000).toISOString();
+  const overdue = new Date(Date.now() - 60000).toISOString();
+  store.notifications = [];
+  for (const order of store.orders) order.slaDueAt = future;
+  for (const number of [3, 11]) {
+    const order = store.orders.find((w) => w.id === wo(number))!;
+    order.assignee = USERS.find((u) => u.id === reviewer.userId)!;
+    order.status = "IN_PROGRESS";
+    order.slaPaused = false;
+    order.slaDueAt = overdue;
+  }
+  const waiting = store.orders.find((w) => w.id === wo(2))!;
+  waiting.assignee = USERS.find((u) => u.id === reviewer.userId)!;
+  waiting.status = "WAITING_SUPPLEMENT";
+  waiting.slaDueAt = overdue;
+  await withStoredSeed(store, async () => {
+    const alerts = (await api.notifications(reviewer)).filter(
+      (n) => n.type === "SLA",
+    );
+    assert.equal(alerts.length, 1);
+    assert.equal(alerts[0].count, 2);
+    assert.equal(alerts[0].workOrderId, undefined);
+    await api.markNotificationsRead([alerts[0].id], reviewer);
+    assert.equal(
+      (await api.notifications(reviewer)).find((n) => n.id === alerts[0].id)!
+        .read,
+      true,
+    );
+    const review = await api.getOrder(wo(3), reviewer);
+    await request(wo(3), item(review, "KYB-REG-ADDR"));
+    const remaining = (await api.notifications(reviewer)).filter(
+      (n) => n.type === "SLA",
+    );
+    assert.equal(remaining.length, 1);
+    assert.equal(remaining[0].count, 1);
+    assert.equal(remaining[0].read, false);
+    const supplement = await supplementFor(review.application.id);
+    assert.ok(
+      (await api.notifications(ops)).some(
+        (n) =>
+          n.workOrderId === supplement.workOrder.id && n.type === "ASSIGNMENT",
+      ),
+    );
+    await notify(supplement.workOrder.id);
+    assert.ok(
+      !(await api.notifications(ops)).some(
+        (n) => n.workOrderId === supplement.workOrder.id,
+      ),
+    );
+    await submit(supplement.workOrder.id);
+    assert.ok(
+      (await api.notifications(ops)).some(
+        (n) =>
+          n.workOrderId === supplement.workOrder.id &&
+          n.type === "NEW_EVIDENCE",
+      ),
+    );
+  });
+});
+
+test("manual QA requires all sampled check judgments and reveals frozen originals only after submission", async () => {
+  const store = createSeed();
+  const qaOrder = store.orders.find((order) => order.id === wo(1))!;
+  const qa = store.qa[qaOrder.id];
+  const snapshot = store.snapshots[qa.snapshotId];
+  const evidence = snapshot.evidence.find(
+    (entry) => entry.kind === "DATA_MATCH",
+  )!;
+  qa.reviewMode = "CHECK_ITEMS";
+  qa.originalConclusions = {
+    "sample-name": "ACCEPTABLE_DIFF",
+    "sample-address": "ACCEPTABLE_DIFF",
+  };
+  snapshot.checkItems = ["sample-name", "sample-address"].map((id) => ({
+    id,
+    checkType: "DATA_MATCH",
+    title: id === "sample-name" ? "名称核对" : "地址核对",
+    reasonCodes: [],
+    evidenceIds: [evidence.id],
+    status: "DECIDED",
+    hasNewEvidence: false,
+    conclusion: "ACCEPTABLE_DIFF",
+    conclusionReason: "原审核已核对",
+    decidedBy: USERS.find((u) => u.id === reviewer.userId)!,
+  }));
+  qaOrder.checkItems = structuredClone(snapshot.checkItems);
+  await withStoredSeed(store, async () => {
+    const blind = await claim(qaOrder.id, senior);
+    assert.equal(blind.qa?.reviewMode, "CHECK_ITEMS");
+    assert.equal(blind.qa?.originalConclusions, undefined);
+    for (const check of blind.workOrder.checkItems!) {
+      assert.equal(check.status, "PENDING");
+      assert.equal(check.conclusion, undefined);
+      assert.equal(check.conclusionReason, undefined);
+      assert.equal(check.decidedBy, undefined);
+    }
+    await rejectUnchanged(
+      qaOrder.id,
+      "qa",
+      { blindConclusions: { overall: "APPROVED" } },
+      senior,
+    );
+    await rejectUnchanged(
+      qaOrder.id,
+      "qa",
+      { blindConclusions: { "sample-name": "ACCEPTABLE_DIFF" } },
+      senior,
+    );
+    const compared = await act(
+      qaOrder.id,
+      "qa",
+      {
+        blindConclusions: {
+          "sample-name": "ACCEPTABLE_DIFF",
+          "sample-address": "REQUEST_INFO",
+        },
+      },
+      senior,
+    );
+    assert.equal(compared.qa?.consistent, false);
+    assert.deepEqual(compared.qa?.originalConclusions, qa.originalConclusions);
+  });
 });

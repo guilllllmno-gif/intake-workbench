@@ -14,7 +14,7 @@ import {
 } from "react-router-dom";
 import { Button } from "@astryxdesign/core/Button";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
-import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { Dialog } from "@astryxdesign/core/Dialog";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Popover } from "@astryxdesign/core/Popover";
 import {
@@ -46,7 +46,7 @@ import {
   Search,
   Users,
 } from "lucide-react";
-import { api } from "../api";
+import { api, ApiError } from "../api";
 import {
   getQueueContext,
   saveQueueContext,
@@ -70,6 +70,7 @@ import {
 } from "../columns";
 import {
   Confirm,
+  DialogHeader,
   Empty,
   InlineConfirm,
   LoadState,
@@ -187,12 +188,40 @@ function QueueContents() {
   const [density, setDensity] = useState<"compact" | "balanced" | "spacious">(
     "compact",
   );
-  const base = useMemo(() => getQueueColumns(view, tab), [view, tab]);
+  const uniformStatus =
+    !!resource.data?.rows.length &&
+    resource.data.rows.every(
+      (row) => row.status === resource.data!.rows[0].status,
+    );
+  const base = useMemo(
+    () => getQueueColumns(view, tab, session),
+    [view, tab, session.userId],
+  );
+  const availableKeys = useMemo(() => {
+    const keys = getQueueColumnIds(view, tab);
+    return [
+      ...keys.filter((key) => key !== "C10"),
+      ...(keys.includes("C10") ? ["C10"] : []),
+      "actions",
+    ];
+  }, [view, tab]);
   const defaultKeys = useMemo(
-    () => [...(getQueueColumnIds(view, tab) ?? []), "actions"],
-    [view, tab],
+    () =>
+      view === "review"
+        ? [
+            "C01",
+            "C02",
+            "C07",
+            ...(tab === "supplement" ? ["supplementProgress"] : ["C08"]),
+            "C09",
+            "C10",
+            "actions",
+          ]
+        : availableKeys,
+    [view, tab, availableKeys],
   );
   const [activeKeys, setActiveKeys] = useState<readonly string[]>(defaultKeys);
+  const pinnedCount = availableKeys.includes("C10") ? 2 : 1;
   const sortedRows = useMemo(() => {
     const rows = resource.data?.rows ?? [];
     if (!sort.length) return rows;
@@ -297,6 +326,7 @@ function QueueContents() {
     } else navigate(orderPath(r));
   };
   const claim = async (r: QueueRow) => {
+    if (busy) return;
     persist();
     setBusy(true);
     try {
@@ -390,29 +420,24 @@ function QueueContents() {
   };
   const columns: TableColumn<TableQueueRow>[] = base.length
     ? [
-        ...base,
+        ...base.filter((column) => column.key !== "C09" || !uniformStatus),
         {
           key: "actions",
           header: "操作",
           width: pixel(88),
           renderCell: (r) =>
             canClaim(r) ? (
-              <span onClick={(event) => event.stopPropagation()}>
-                <InlineConfirm
-                  title="领取这张工单并打开工作台？"
-                  confirmLabel="领取并打开"
-                  busy={busy}
-                  onConfirm={() => claim(r)}
-                >
-                  <Button
-                    label="领取"
-                    variant="ghost"
-                    size="sm"
-                    isDisabled={busy}
-                    tooltip={busy ? "正在领取，请稍候" : "领取并打开工作台"}
-                  />
-                </InlineConfirm>
-              </span>
+              <Button
+                label="领取"
+                variant="ghost"
+                size="sm"
+                isDisabled={busy}
+                tooltip={busy ? "正在领取，请稍候" : "领取并打开工作台"}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void claim(r);
+                }}
+              />
             ) : (
               <Button
                 label={
@@ -432,18 +457,23 @@ function QueueContents() {
       ]
     : [];
   const settingsState = useTableColumnSettingsState({
-    columns: defaultKeys.map((key) => ({
+    columns: availableKeys.map((key) => ({
       key,
       label: COLUMN_DEFINITIONS[key]?.title ?? "操作",
-      isAlwaysVisible: key === "C01" || key === "actions",
+      isAlwaysVisible: key === "C01" || key === "C10" || key === "actions",
     })),
     activeColumnKeys: activeKeys,
     onChangeActiveColumnKeys: setActiveKeys,
     defaultColumnKeys: defaultKeys,
   });
-  const settingsPlugin = useTableColumnSettings<TableQueueRow>(
-    settingsState.columnSettingsConfig,
-  );
+  const settingsPlugin = useTableColumnSettings<TableQueueRow>({
+    ...settingsState.columnSettingsConfig,
+    activeColumnKeys: [
+      ...activeKeys.filter((key) => key !== "C10" && key !== "actions"),
+      ...(availableKeys.includes("C10") ? ["C10"] : []),
+      "actions",
+    ],
+  });
   const sortPlugin = useTableSortable<TableQueueRow>({
     sort,
     onSortChange: (next) => {
@@ -492,9 +522,19 @@ function QueueContents() {
   });
   const stickyPlugin = useTableStickyColumns<TableQueueRow>({
     startKeys: ["C01"],
-    endKeys: ["actions"],
+    endKeys: ["C10", "actions"],
   });
   const navigationPlugin: TablePlugin<TableQueueRow> = {
+    transformHeaderCell: (props, column) =>
+      column.key === "C08"
+        ? {
+            ...props,
+            htmlProps: {
+              ...props.htmlProps,
+              className: `${props.htmlProps.className ?? ""} queue-priority-header`,
+            },
+          }
+        : props,
     transformBodyRow: (props, item) => ({
       ...props,
       htmlProps: {
@@ -527,7 +567,8 @@ function QueueContents() {
     const next = [...activeKeys];
     const index = next.indexOf(key);
     const target = index + direction;
-    if (index <= 0 || target <= 0 || target >= next.length - 1) return;
+    if (index <= 0 || target <= 0 || target >= next.length - pinnedCount)
+      return;
     [next[index], next[target]] = [next[target], next[index]];
     setActiveKeys(next);
   };
@@ -539,7 +580,7 @@ function QueueContents() {
     return (
       <LoadState
         loading={false}
-        error="无权限访问此工作队列"
+        error={new ApiError("无权限访问此工作队列", 403)}
         retry={() => navigate("/applications")}
       >
         {null}
@@ -929,10 +970,13 @@ function QueueContents() {
           <div className="queue-column-options">
             {[
               ...activeKeys,
-              ...defaultKeys.filter((key) => !activeKeys.includes(key)),
+              ...availableKeys.filter((key) => !activeKeys.includes(key)),
             ].map((key) => {
-              const label = COLUMN_DEFINITIONS[key]?.title ?? "操作";
-              const active = settingsState.isColumnActive(key);
+              const autoHidden = key === "C09" && uniformStatus;
+              const label = autoHidden
+                ? "状态（当前页签状态相同，自动隐藏）"
+                : (COLUMN_DEFINITIONS[key]?.title ?? "操作");
+              const active = !autoHidden && settingsState.isColumnActive(key);
               const index = activeKeys.indexOf(key);
               return (
                 <div className="queue-column-option" key={key}>
@@ -944,51 +988,60 @@ function QueueContents() {
                         ? activeKeys.filter((value) => value !== key)
                         : [
                             ...activeKeys.filter(
-                              (value) => value !== "actions",
+                              (value) => value !== "C10" && value !== "actions",
                             ),
                             key,
+                            ...(availableKeys.includes("C10") ? ["C10"] : []),
                             "actions",
                           ];
                       settingsState.setActiveColumnKeys(next);
                     }}
-                    isDisabled={!settingsState.isColumnToggleable(key)}
+                    isDisabled={
+                      autoHidden || !settingsState.isColumnToggleable(key)
+                    }
                   />
-                  {key !== "C01" && key !== "actions" && (
-                    <div className="row">
-                      <Button
-                        label={`上移${label}`}
-                        isIconOnly
-                        variant="ghost"
-                        size="sm"
-                        icon={<ArrowUp size={14} />}
-                        isDisabled={!active || index <= 1}
-                        tooltip={
-                          !active
-                            ? "先显示该列后可调整顺序"
-                            : index <= 1
-                              ? "已是最靠前的可调整列"
-                              : "向左移动一列"
-                        }
-                        onClick={() => moveColumn(key, -1)}
-                      />
-                      <Button
-                        label={`下移${label}`}
-                        isIconOnly
-                        variant="ghost"
-                        size="sm"
-                        icon={<ArrowDown size={14} />}
-                        isDisabled={!active || index >= activeKeys.length - 2}
-                        tooltip={
-                          !active
-                            ? "先显示该列后可调整顺序"
-                            : index >= activeKeys.length - 2
-                              ? "已是最靠后的可调整列"
-                              : "向右移动一列"
-                        }
-                        onClick={() => moveColumn(key, 1)}
-                      />
-                    </div>
-                  )}
+                  {key !== "C01" &&
+                    key !== "C10" &&
+                    key !== "actions" &&
+                    !autoHidden && (
+                      <div className="row">
+                        <Button
+                          label={`上移${label}`}
+                          isIconOnly
+                          variant="ghost"
+                          size="sm"
+                          icon={<ArrowUp size={14} />}
+                          isDisabled={!active || index <= 1}
+                          tooltip={
+                            !active
+                              ? "先显示该列后可调整顺序"
+                              : index <= 1
+                                ? "已是最靠前的可调整列"
+                                : "向左移动一列"
+                          }
+                          onClick={() => moveColumn(key, -1)}
+                        />
+                        <Button
+                          label={`下移${label}`}
+                          isIconOnly
+                          variant="ghost"
+                          size="sm"
+                          icon={<ArrowDown size={14} />}
+                          isDisabled={
+                            !active ||
+                            index >= activeKeys.length - pinnedCount - 1
+                          }
+                          tooltip={
+                            !active
+                              ? "先显示该列后可调整顺序"
+                              : index >= activeKeys.length - pinnedCount - 1
+                                ? "已是最靠后的可调整列"
+                                : "向右移动一列"
+                          }
+                          onClick={() => moveColumn(key, 1)}
+                        />
+                      </div>
+                    )}
                 </div>
               );
             })}

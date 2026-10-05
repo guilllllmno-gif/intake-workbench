@@ -217,7 +217,7 @@ export function menuPath(key: MenuEntry["key"]) {
     : `/queue/${key}`;
 }
 export function homePath(role: Role) {
-  return role === "MERCHANT" ? "/merchant/MT-S9" : menuPath(MENUS[role][0].key);
+  return role === "MERCHANT" ? "/merchant" : menuPath(MENUS[role][0].key);
 }
 export function orderPath(order: { id: string; type: string; status: string }) {
   const route =

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
-import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { Dialog } from "@astryxdesign/core/Dialog";
 import { NumberInput } from "@astryxdesign/core/NumberInput";
 import { Selector } from "@astryxdesign/core/Selector";
 import { TextArea } from "@astryxdesign/core/TextArea";
@@ -13,20 +13,29 @@ import {
   type TablePlugin,
 } from "@astryxdesign/core/Table";
 import { api } from "../api";
-import { useAsync, useOrder, useQueueFlow, useSession } from "../hooks";
+import {
+  useAsync,
+  useDetailView,
+  useOrder,
+  useQueueFlow,
+  useSession,
+} from "../hooks";
 import {
   Badge,
   Panel,
   Confirm,
   Empty,
   IdText,
-  InlineConfirm,
+  DialogHeader,
   LoadState,
   OrderHeader,
+  OrderSummary,
+  DetailTabs,
+  DetailSection,
   PersonName,
   Timeline,
 } from "../ui";
-import { CHECK_OPTIONS, reasonName } from "../catalog";
+import { CHECK_OPTIONS, DECLINE_CONCLUSIONS, reasonName } from "../catalog";
 import { dateTime, money } from "../format";
 import EvidencePanel, { emptyEvidenceDraft } from "../components/EvidencePanel";
 import type { ApprovalConditions, CheckItem } from "../types";
@@ -117,6 +126,11 @@ export default function ApprovalPage() {
   const { data, loading, error, reload, busy, act, stale } = useOrder();
   const { session } = useSession();
   const { next } = useQueueFlow();
+  const [view, setView] = useDetailView("risk", [
+    "risk",
+    "evidence",
+    "history",
+  ]);
   const me = useAsync(() => api.me(session), [session.userId, session.role]);
   const users = useAsync(
     () => api.users(session),
@@ -299,10 +313,17 @@ export default function ApprovalPage() {
       key: "conclusion",
       header: "结论",
       width: pixel(130),
-      renderCell: (item) =>
-        CHECK_OPTIONS[item.checkType]?.find(
-          (option) => option.value === item.conclusion,
-        )?.label || "—",
+      renderCell: (item) => (
+        <Badge
+          tone={
+            DECLINE_CONCLUSIONS[item.conclusion || ""] ? "danger" : "neutral"
+          }
+        >
+          {CHECK_OPTIONS[item.checkType]?.find(
+            (option) => option.value === item.conclusion,
+          )?.label || "—"}
+        </Badge>
+      ),
     },
     {
       key: "conclusionReason",
@@ -336,52 +357,26 @@ export default function ApprovalPage() {
       ((!order.assignee || !["RETURN", "DISAGREE"].includes(value)) &&
         authorityBlock) ||
       "";
-    const button = (
+    return (
       <Button
         key={value}
         label={decisionLabels[value]}
         variant={primary ? "primary" : "secondary"}
+        className={value === "DECLINED" ? "dv-danger-action" : undefined}
         tooltip={unavailable || undefined}
         isDisabled={Boolean(unavailable) || busy}
-        onClick={order.assignee ? () => choose(value) : undefined}
-      />
-    );
-    return order.assignee ? (
-      button
-    ) : (
-      <InlineConfirm
-        key={value}
-        title="领取审批工单并继续当前操作？"
-        confirmLabel="领取并继续"
-        disabled={Boolean(unavailable) || busy}
-        busy={busy}
-        onConfirm={async () => {
-          if (await act("claim")) choose(value);
+        onClick={async () => {
+          if (order.assignee || (await act("claim"))) choose(value);
         }}
-      >
-        {button}
-      </InlineConfirm>
+      />
     );
   };
   return (
-    <div className="page dv-page">
-      <OrderHeader
-        data={data}
-        actions={
-          session.role === "APPROVER" ? (
-            <div className="action-row">
-              {action("APPROVED", true)}
-              {action("APPROVED_WITH_CONDITIONS")}
-              {action("DECLINED")}
-              {action("RETURN")}
-              {waitingSecond && action("DISAGREE")}
-            </div>
-          ) : undefined
-        }
-      />
+    <div className="page dv-page detail-page dv-decision-page">
+      <OrderHeader data={data} />
       {error && (
         <div className="dv-notice dv-error" role="alert">
-          {error}
+          {error.message}
         </div>
       )}
       {stale && (
@@ -392,7 +387,7 @@ export default function ApprovalPage() {
       )}
       {(me.error || users.error) && session.role === "APPROVER" && (
         <div className="dv-notice dv-error" role="alert">
-          <span>{me.error || users.error}</span>
+          <span>{(me.error || users.error)?.message}</span>
           <Button
             label="重试"
             onClick={() => {
@@ -402,170 +397,277 @@ export default function ApprovalPage() {
           />
         </div>
       )}
-      {exceedsHighest && (
-        <div className="dv-notice dv-warning">
-          预估月交易额超出最高授权档，须两位最高档高级管理层审批人确认。
-        </div>
-      )}
-      {(dual || waitingSecond) && (
-        <div className="dv-notice">
-          <strong>复核进度 {Math.min(actors.length, 2)}/2</strong>
-          {first && (
-            <>
-              <PersonName
-                user={first.approvers.find((user) => user.id === actors[0])}
-              />
-              <span>
-                {decisionLabels[order.pendingDecision || first.decision] || "—"}
-              </span>
-            </>
-          )}
-        </div>
-      )}
-      <div className="dv-two-columns">
-        <Panel title="审批原因">
-          {reasons.length ? (
-            reasons.map((code) => {
-              const source = checks.find((item) =>
-                item.reasonCodes.includes(code),
-              );
-              return (
-                <div className="dv-reason" key={code}>
-                  <strong>{reasonName(code)}</strong>
-                  <div>来源检查项：{source?.title || "准入规则"}</div>
-                  <p className="secondary">
-                    {source?.conclusionReason ||
-                      (code === "INT-PEP"
-                        ? "需两位高级管理层审批人确认。"
-                        : "该项超出常规准入范围，需授权审批。")}
-                  </p>
-                </div>
-              );
-            })
-          ) : (
-            <Empty title="无审批原因" description="当前工单未记录审批原因。" />
-          )}
-        </Panel>
-        <Panel title="风险敞口">
-          <dl className="details-grid">
-            <div>
-              <dt>预估月交易额</dt>
-              <dd>{money(merchant.expectedMonthlyVolume)}</dd>
-            </div>
-            <div>
-              <dt>平均单笔</dt>
-              <dd>{money(merchant.averageTransaction)}</dd>
-            </div>
-            <div>
-              <dt>MCC 风险</dt>
-              <dd>{merchant.mccRisk || "—"}</dd>
-            </div>
-            <div>
-              <dt>国家风险</dt>
-              <dd>{merchant.countryRisk || "—"}</dd>
-            </div>
-            <div>
-              <dt>新主体</dt>
-              <dd>
-                {merchant.isNewEntity == null
-                  ? "—"
-                  : merchant.isNewEntity
-                    ? "是"
-                    : "否"}
-              </dd>
-            </div>
-            <div>
-              <dt>我的审批额度</dt>
-              <dd>
-                {me.data?.approvalLimit == null
-                  ? "—"
-                  : money({
-                      amount: me.data.approvalLimit,
-                      currency: merchant.expectedMonthlyVolume.currency,
-                    })}
-              </dd>
-            </div>
-            <div>
-              <dt>我的授权</dt>
-              <dd>
-                {me.data?.authority === "MANAGEMENT"
-                  ? "高级管理层"
-                  : me.data?.authority === "RISK"
-                    ? "风控负责人"
-                    : "—"}
-              </dd>
-            </div>
-          </dl>
-        </Panel>
-      </div>
-      <Panel title="检查项结论" className="dense-table">
-        <Table
-          aria-label="检查项结论"
-          idKey="id"
-          density="compact"
-          columns={columns}
-          hasHover
-          plugins={{ stickyColumns, snapshotRows }}
-          data={checks as (CheckItem & Record<string, unknown>)[]}
-        />
-      </Panel>
-      {!!data.approvalDecisions?.length && (
-        <Panel title="审批记录">
-          <div className="dv-stack">
-            {data.approvalDecisions.map((entry) => (
-              <div className="dv-record" key={entry.id}>
-                <div className="row">
-                  <Badge>{decisionLabels[entry.decision] || "审批意见"}</Badge>
-                  {entry.approvers.map((user) => (
-                    <PersonName key={user.id} user={user} />
-                  ))}
-                  <span className="secondary">{dateTime(entry.at)}</span>
-                </div>
-                <p>{entry.reason || "—"}</p>
-                {entry.conditions && (
-                  <dl className="details-grid">
-                    <div>
-                      <dt>单笔限额</dt>
-                      <dd>
-                        {money({
-                          amount: entry.conditions.singleLimit,
-                          currency: merchant.expectedMonthlyVolume.currency,
-                        })}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>月限额</dt>
-                      <dd>
-                        {money({
-                          amount: entry.conditions.monthlyLimit,
-                          currency: merchant.expectedMonthlyVolume.currency,
-                        })}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>准备金比例</dt>
-                      <dd>{entry.conditions.reservePct.toFixed(1)}%</dd>
-                    </div>
-                    <div>
-                      <dt>准备金期限</dt>
-                      <dd>{entry.conditions.reserveDays} 天</dd>
-                    </div>
-                    <div>
-                      <dt>复审周期</dt>
-                      <dd>{entry.conditions.reviewDays} 天</dd>
-                    </div>
-                  </dl>
+      <DetailTabs
+        id="approval-detail"
+        value={view}
+        onChange={setView}
+        label="审批工单详情"
+        items={[
+          { value: "risk", label: "风险与审批原因", count: reasons.length },
+          { value: "evidence", label: "结论与证据", count: checks.length },
+          {
+            value: "history",
+            label: "审批记录与日志",
+            count: data.approvalDecisions?.length || 0,
+          },
+        ]}
+      />
+      <div className="detail-layout">
+        <div className="detail-main">
+          <DetailSection id="approval-detail" value="risk" active={view}>
+            <div className="dv-two-columns">
+              <Panel title="审批原因">
+                {reasons.length ? (
+                  reasons.map((code) => {
+                    const source = checks.find((item) =>
+                      item.reasonCodes.includes(code),
+                    );
+                    return (
+                      <div className="dv-reason" key={code}>
+                        <strong>{reasonName(code)}</strong>
+                        <div className="dv-source-check">
+                          来源检查项：{source?.title || "准入规则"}
+                        </div>
+                        <p className="secondary">
+                          {source?.conclusionReason ||
+                            (code === "INT-PEP"
+                              ? "需两位高级管理层审批人确认。"
+                              : "该项超出常规准入范围，需授权审批。")}
+                        </p>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <Empty
+                    title="无审批原因"
+                    description="当前工单未记录审批原因。"
+                  />
                 )}
+              </Panel>
+              <Panel title="风险敞口">
+                <dl className="details-grid">
+                  <div>
+                    <dt>预估月交易额</dt>
+                    <dd>{money(merchant.expectedMonthlyVolume)}</dd>
+                  </div>
+                  <div>
+                    <dt>平均单笔</dt>
+                    <dd>{money(merchant.averageTransaction)}</dd>
+                  </div>
+                  <div>
+                    <dt>MCC 风险</dt>
+                    <dd>{merchant.mccRisk || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>国家风险</dt>
+                    <dd>{merchant.countryRisk || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>新主体</dt>
+                    <dd>
+                      {merchant.isNewEntity == null
+                        ? "—"
+                        : merchant.isNewEntity
+                          ? "是"
+                          : "否"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>我的审批额度</dt>
+                    <dd>
+                      {me.data?.approvalLimit == null
+                        ? "—"
+                        : money({
+                            amount: me.data.approvalLimit,
+                            currency: merchant.expectedMonthlyVolume.currency,
+                          })}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>我的授权</dt>
+                    <dd>
+                      {me.data?.authority === "MANAGEMENT"
+                        ? "高级管理层"
+                        : me.data?.authority === "RISK"
+                          ? "风控负责人"
+                          : "—"}
+                    </dd>
+                  </div>
+                </dl>
+              </Panel>
+            </div>
+          </DetailSection>
+          <DetailSection id="approval-detail" value="evidence" active={view}>
+            <Panel title="检查项结论" className="dense-table">
+              <Table
+                aria-label="检查项结论"
+                idKey="id"
+                density="compact"
+                columns={columns}
+                hasHover
+                plugins={{ stickyColumns, snapshotRows }}
+                data={checks as (CheckItem & Record<string, unknown>)[]}
+              />
+            </Panel>
+          </DetailSection>
+          <DetailSection id="approval-detail" value="history" active={view}>
+            {!data.approvalDecisions?.length && (
+              <Panel title="审批记录">
+                <Empty
+                  title="暂无审批记录"
+                  description="提交审批意见后，决定、条件与审批人将在这里保留。"
+                />
+              </Panel>
+            )}
+            {!!data.approvalDecisions?.length && (
+              <Panel title="审批记录">
+                <div className="dv-stack">
+                  {data.approvalDecisions.map((entry) => (
+                    <div className="dv-record" key={entry.id}>
+                      <div className="row">
+                        <Badge
+                          tone={
+                            entry.decision === "DECLINED" ? "danger" : "neutral"
+                          }
+                        >
+                          {decisionLabels[entry.decision] || "审批意见"}
+                        </Badge>
+                        {entry.approvers.map((user) => (
+                          <PersonName key={user.id} user={user} />
+                        ))}
+                        <span className="secondary">{dateTime(entry.at)}</span>
+                      </div>
+                      <p>{entry.reason || "—"}</p>
+                      {entry.conditions && (
+                        <dl className="details-grid">
+                          <div>
+                            <dt>单笔限额</dt>
+                            <dd>
+                              {money({
+                                amount: entry.conditions.singleLimit,
+                                currency:
+                                  merchant.expectedMonthlyVolume.currency,
+                              })}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>月限额</dt>
+                            <dd>
+                              {money({
+                                amount: entry.conditions.monthlyLimit,
+                                currency:
+                                  merchant.expectedMonthlyVolume.currency,
+                              })}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>准备金比例</dt>
+                            <dd>{entry.conditions.reservePct.toFixed(1)}%</dd>
+                          </div>
+                          <div>
+                            <dt>准备金期限</dt>
+                            <dd>{entry.conditions.reserveDays} 天</dd>
+                          </div>
+                          <div>
+                            <dt>复审周期</dt>
+                            <dd>{entry.conditions.reviewDays} 天</dd>
+                          </div>
+                        </dl>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+            )}
+            {data.audit && (
+              <Panel title="操作日志">
+                <Timeline audit={data.audit} />
+              </Panel>
+            )}
+          </DetailSection>
+        </div>
+        <aside className="detail-aside dv-decision-aside">
+          <OrderSummary data={data} title="当前审批">
+            <div className="dv-stack">
+              {exceedsHighest && (
+                <div className="dv-notice dv-warning">
+                  预估月交易额超出最高授权档，须两位最高档高级管理层审批人确认。
+                </div>
+              )}
+              {(dual || waitingSecond) && (
+                <div className="dv-notice">
+                  <strong>复核进度 {Math.min(actors.length, 2)}/2</strong>
+                  {first && (
+                    <>
+                      <PersonName
+                        user={first.approvers.find(
+                          (user) => user.id === actors[0],
+                        )}
+                      />
+                      <Badge
+                        tone={
+                          (order.pendingDecision || first.decision) ===
+                          "DECLINED"
+                            ? "danger"
+                            : "neutral"
+                        }
+                      >
+                        {decisionLabels[
+                          order.pendingDecision || first.decision
+                        ] || "—"}
+                      </Badge>
+                    </>
+                  )}
+                </div>
+              )}
+              <p className="secondary dv-context-copy">
+                {blocked ||
+                  authorityBlock ||
+                  (waitingSecond
+                    ? "核对第一审批意见与证据后，提交复核决定。"
+                    : "核对风险敞口与证据后选择审批结果，提交前可预览影响。")}
+              </p>
+              {session.role === "APPROVER" && (
+                <div
+                  className="detail-context-actions dv-approval-actions"
+                  role="group"
+                  aria-label="审批操作"
+                >
+                  {action("APPROVED", true)}
+                  {action("APPROVED_WITH_CONDITIONS")}
+                  {action("DECLINED")}
+                  {action("RETURN")}
+                  {waitingSecond && action("DISAGREE")}
+                </div>
+              )}
+            </div>
+          </OrderSummary>
+          <Panel title="审批依据" className="detail-context">
+            <dl className="detail-summary-facts">
+              <div>
+                <dt>预估月交易额</dt>
+                <dd>{money(merchant.expectedMonthlyVolume)}</dd>
               </div>
-            ))}
-          </div>
-        </Panel>
-      )}
-      {data.audit && (
-        <Panel title="操作日志">
-          <Timeline audit={data.audit} />
-        </Panel>
-      )}
+              <div>
+                <dt>复核要求</dt>
+                <dd>{dual ? "双人审批" : "单人审批"}</dd>
+              </div>
+            </dl>
+            <Button
+              label="查看结论与证据"
+              variant="ghost"
+              className="detail-shortcut"
+              onClick={() => setView("evidence")}
+            />
+            <Button
+              label="查看审批记录"
+              variant="ghost"
+              className="detail-shortcut"
+              onClick={() => setView("history")}
+            />
+          </Panel>
+        </aside>
+      </div>
       <Dialog
         isOpen={Boolean(snapshotId)}
         width={920}
@@ -609,6 +711,9 @@ export default function ApprovalPage() {
         <div className="dv-stack">
           {decision === "DECLINED" ? (
             <>
+              <div className="dv-danger-selection" role="status">
+                已选择拒绝 · 提交后将按审批规则生效
+              </div>
               <Selector
                 label="内部拒绝原因"
                 isRequired

@@ -4,7 +4,13 @@ import { Badge } from "@astryxdesign/core/Badge";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { Globe, Mail, MessageSquare } from "lucide-react";
 import { Link } from "react-router-dom";
-import type { ApplicationRow, QueueRow, QueueView, Role } from "./types";
+import type {
+  ApplicationRow,
+  QueueRow,
+  QueueView,
+  Role,
+  Session,
+} from "./types";
 import { IdText, PersonName, Sla, StatusBadge } from "./ui";
 import {
   countryName,
@@ -17,6 +23,7 @@ import {
   statusLabel,
   applicationStatus,
   deadlineDate,
+  merchantTradingName,
 } from "./format";
 type Row = QueueRow | ApplicationRow;
 const isApp = (row: Row): row is ApplicationRow => "application" in row;
@@ -51,46 +58,58 @@ function FullText({ text }: { text: string }) {
 interface ColumnDef {
   title: string;
   width: number;
-  render: (row: Row) => ReactNode;
+  render: (row: Row, session?: Pick<Session, "userId">) => ReactNode;
   sort?: (row: Row) => number;
   align?: "right";
 }
 export const COLUMN_DEFINITIONS: Record<string, ColumnDef> = {
   C01: {
     title: "工单号",
-    width: 170,
+    width: 150,
     render: (r) => <IdText value={queue(r)?.id} />,
   },
   C02: {
     title: "商户",
-    width: 260,
-    render: (r) => (
-      <div className="merchant-cell">
-        <div>
-          {isApp(r) ? r.merchant.legalName : r.merchantName}
-          {(isApp(r) ? r.application.isKeyMerchant : r.isKeyMerchant) && (
-            <Badge variant="neutral" label="重点" />
-          )}
-          {!isApp(r) && r.hasNewEvidence && (
-            <Badge variant="info" label="有新证据" />
-          )}
-        </div>
-        {(isApp(r) ? r.merchant.displayName : r.displayName || r.assignee) && (
-          <div className="secondary merchant-display">
-            {!isApp(r) &&
-              r.assignee &&
-              !["CLOSED", "DONE", "WITHDRAWN", "CLOSED_NO_RESPONSE"].includes(
-                r.status,
-              ) && (
+    width: 200,
+    render: (r, session) => {
+      const legalName = isApp(r) ? r.merchant.legalName : r.merchantName;
+      const displayName = merchantTradingName(
+        legalName,
+        isApp(r) ? r.merchant.displayName : r.displayName,
+      );
+      const otherAssignee =
+        !isApp(r) &&
+        session &&
+        r.assignee?.id !== session.userId &&
+        !["CLOSED", "DONE", "WITHDRAWN", "CLOSED_NO_RESPONSE"].includes(
+          r.status,
+        )
+          ? r.assignee
+          : undefined;
+      return (
+        <div className="merchant-cell">
+          <div title={legalName}>
+            {legalName}
+            {(isApp(r) ? r.application.isKeyMerchant : r.isKeyMerchant) && (
+              <Badge variant="neutral" label="重点" />
+            )}
+            {!isApp(r) && r.hasNewEvidence && (
+              <Badge variant="info" label="有新证据" />
+            )}
+          </div>
+          {(displayName || otherAssignee) && (
+            <div className="secondary merchant-display">
+              {otherAssignee && (
                 <span>
-                  {r.assignee.name}正在处理{r.displayName ? " · " : ""}
+                  {otherAssignee.name}正在处理{displayName ? " · " : ""}
                 </span>
               )}
-            {isApp(r) ? r.merchant.displayName : r.displayName}
-          </div>
-        )}
-      </div>
-    ),
+              {displayName}
+            </div>
+          )}
+        </div>
+      );
+    },
   },
   C03: {
     title: "申请号",
@@ -106,12 +125,12 @@ export const COLUMN_DEFINITIONS: Record<string, ColumnDef> = {
   },
   C04: {
     title: "注册地",
-    width: 100,
+    width: 90,
     render: (r) => countryName(isApp(r) ? r.merchant.country : r.country),
   },
   C05: {
     title: "申报 MCC",
-    width: 150,
+    width: 130,
     render: (r) => mccName(isApp(r) ? r.merchant.declaredMcc : r.declaredMcc),
   },
   C06: {
@@ -128,7 +147,7 @@ export const COLUMN_DEFINITIONS: Record<string, ColumnDef> = {
   },
   C07: {
     title: "待处理检查项",
-    width: 230,
+    width: 200,
     render: (r) => {
       const row = queue(r);
       const summary = row?.pendingCheckCount
@@ -157,11 +176,11 @@ export const COLUMN_DEFINITIONS: Record<string, ColumnDef> = {
   },
   C08: {
     title: "优先级",
-    width: 80,
+    width: 64,
     render: (r) => {
       const p = isApp(r) ? r.currentOrder?.priority : r.priority;
       return p === "HIGH" ? (
-        <Badge variant="error" label="高" />
+        <Badge variant="error" label="高" className="priority-high" />
       ) : p === "LOW" ? (
         <span className="secondary">低</span>
       ) : null;
@@ -187,13 +206,13 @@ export const COLUMN_DEFINITIONS: Record<string, ColumnDef> = {
   },
   C11: {
     title: "进入队列",
-    width: 110,
+    width: 100,
     render: (r) => dateTime(queue(r)?.createdAt, true),
     sort: (r) => stamp(queue(r)?.createdAt),
   },
   C12: {
     title: "处理人",
-    width: 100,
+    width: 80,
     render: (r) => (
       <PersonName user={isApp(r) ? r.currentOrder?.assignee : r.assignee} />
     ),
@@ -374,11 +393,10 @@ export const COLUMN_DEFINITIONS: Record<string, ColumnDef> = {
   },
   C33: {
     title: "内部状态",
-    width: 160,
+    width: 110,
     render: (r) =>
       isApp(r)
         ? applicationStatus(
-            r.application.stage,
             r.internalStatus ?? r.currentOrder?.status ?? r.application.status,
           )
         : "—",
@@ -387,7 +405,7 @@ export const COLUMN_DEFINITIONS: Record<string, ColumnDef> = {
     title: "对外状态",
     width: 110,
     render: (r) =>
-      isApp(r) ? <Badge label={r.application.externalStatus} /> : "—",
+      isApp(r) ? <StatusBadge status={r.application.externalStatus} /> : "—",
   },
   C35: {
     title: "下一步",
@@ -457,6 +475,7 @@ export const COLUMN_DEFINITIONS: Record<string, ColumnDef> = {
 };
 function columns<T extends Row & Record<string, unknown>>(
   ids: string[],
+  session?: Pick<Session, "userId">,
 ): TableColumn<T>[] {
   return ids.map((id) => {
     const d = COLUMN_DEFINITIONS[id];
@@ -465,7 +484,7 @@ function columns<T extends Row & Record<string, unknown>>(
       header: d.title,
       width: pixel(d.width),
       align: d.align === "right" ? "end" : "start",
-      renderCell: (row) => d.render(row),
+      renderCell: (row) => d.render(row, session),
       sortable: !!d.sort,
     };
   });
@@ -474,7 +493,16 @@ export function getQueueColumnIds(view: QueueView, tab: string): string[] {
   switch (view) {
     case "review":
       return tab === "supplement"
-        ? ["C01", "C02", "C04", "C07", "C09", "supplementProgress", "C12"]
+        ? [
+            "C01",
+            "C02",
+            "C04",
+            "C07",
+            "C09",
+            "supplementProgress",
+            "C12",
+            "C10",
+          ]
         : [
             "C01",
             "C02",
@@ -529,8 +557,9 @@ export function getQueueColumnIds(view: QueueView, tab: string): string[] {
 export function getQueueColumns(
   view: QueueView,
   tab: string,
+  session: Pick<Session, "userId">,
 ): TableColumn<QueueRow & Record<string, unknown>>[] {
-  return columns(getQueueColumnIds(view, tab));
+  return columns(getQueueColumnIds(view, tab), session);
 }
 export function getApplicationColumns(
   role: Role,

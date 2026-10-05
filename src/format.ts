@@ -22,11 +22,41 @@ export const MCC_NAMES: Record<string, string> = {
   "5411": "食品杂货",
   "5967": "电话服务",
   "7995": "博彩",
+  "5691": "服装",
+  "5722": "家用电器",
+  "5735": "音像制品",
+  "5941": "体育用品",
+  "5942": "书店",
+  "5943": "文具",
+  "5995": "宠物用品",
 };
 export const countryName = (code?: string) =>
   code ? `${COUNTRY_NAMES[code] ?? code} ${code}` : "—";
 export const mccName = (code?: string) =>
   code ? `${code} ${MCC_NAMES[code] ?? ""}`.trim() : "—";
+
+export function merchantTradingName(legalName: string, displayName?: string) {
+  const display = displayName?.trim();
+  if (!display) return undefined;
+  const normalize = (name: string) =>
+    name
+      .normalize("NFKC")
+      .replace(/\./g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  const legal = normalize(legalName);
+  const shortLegal = legal
+    .replace(
+      /(?:,?\s+(?:pte\s+ltd|private\s+limited|ltd|limited|gmbh|llc|inc|incorporated|corp|corporation)|有限公司|有限责任公司|股份有限公司)$/u,
+      "",
+    )
+    .trim();
+  const shortDisplay = normalize(display);
+  return shortDisplay === legal || shortDisplay === shortLegal
+    ? undefined
+    : display;
+}
 export const money = (value?: Money) =>
   value
     ? `${value.currency} ${value.amount.toLocaleString("en-US", { maximumFractionDigits: 2 })}`
@@ -132,8 +162,7 @@ export const statusLabel = (value?: string): string =>
   value
     ? (STATUS_LABELS[value as Status] ?? RESULT_LABELS[value] ?? value)
     : "—";
-export const applicationStatus = (stage: string, status?: string) =>
-  `${STAGE_LABELS[stage] ?? stage} · ${statusLabel(status)}`;
+export const applicationStatus = (status?: string) => statusLabel(status);
 
 const COUNTRY_TIMEZONES: Record<string, string> = {
   DE: "Europe/Berlin",

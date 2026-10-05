@@ -10,7 +10,7 @@
   line-height: 1.5;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
 }
 
 .rv-header {
@@ -33,7 +33,7 @@
 .rv-banners {
   flex: none;
   display: grid;
-  gap: 1px;
+  gap: 0px;
   max-height: 24vh;
   overflow-y: auto;
 }
@@ -85,7 +85,7 @@
 .rv-check-row.astryx-button {
   height: auto;
   min-height: 64px;
-  padding: 9px 10px 9px 12px;
+  padding: 8px 12px;
   border-radius: 0;
   border-left: 3px solid transparent;
   text-align: left;
@@ -103,12 +103,12 @@
   min-width: 0;
   width: 100%;
   display: grid;
-  gap: 3px;
+  gap: 4px;
 }
 
 .rv-check-title {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   align-items: flex-start;
   font-size: 14px;
   font-weight: 600;
@@ -121,7 +121,7 @@
 
 .rv-check-title > svg {
   flex: none;
-  margin-top: 3px;
+  margin-top: 4px;
   margin-left: auto;
   color: var(--success);
 }
@@ -145,7 +145,7 @@
 .rv-evidence {
   flex: 1;
   min-width: 0;
-  padding: 16px 20px 24px;
+  padding: 12px 16px;
 }
 
 .rv-evidence-heading {
@@ -153,15 +153,15 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
 }
 
 .rv-evidence-heading h2 {
-  margin: 3px 0 0;
+  margin: 0;
   min-width: 0;
   font-size: 16px;
   line-height: 1.5;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .rv-evidence-heading > .astryx-button {
@@ -171,10 +171,10 @@
 .rv-conclusion {
   flex: none;
   min-width: 0;
-  max-height: 48%;
+  max-height: 40%;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 12px 20px;
+  padding: 8px 16px;
   border-top: 1px solid var(--border);
   background: var(--surface);
   box-shadow: 0 -4px 12px rgb(0 0 0 / 3%);
@@ -182,19 +182,19 @@
 }
 
 .rv-conclusion-content {
-  display: grid;
-  gap: 10px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   min-width: 0;
 }
 
 .rv-conclusion-row {
-  display: flex;
-  align-items: flex-end;
-  gap: 12px;
+  display: contents;
 }
 
-.rv-conclusion-row > :first-child {
-  flex: 1;
+.rv-conclusion-row > .rv-reasons {
+  flex: 1 1 180px;
   min-width: 0;
 }
 
@@ -222,21 +222,18 @@
 .rv-claim-prompt {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 12px;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--canvas);
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .rv-derived-conclusion,
 .rv-conclusion-choices,
 .rv-composed-result {
-  display: grid;
-  gap: 6px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .rv-reasons .row,
@@ -251,8 +248,8 @@
 }
 
 .rv-composed-result {
-  margin-top: 12px;
-  padding-top: 12px;
+  margin-top: 8px;
+  padding-top: 8px;
   border-top: 1px solid var(--border);
 }
 
@@ -269,7 +266,7 @@
 }
 
 .rv-shortcuts kbd {
-  padding: 2px 5px;
+  padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--canvas);
@@ -286,7 +283,7 @@
   background: var(--surface);
 }
 
-.rv-reference > .astryx-tab-list {
+.rv-reference > .detail-tabs {
   flex: none;
   min-width: 0;
   padding-inline: 4px;
@@ -295,7 +292,7 @@
 .rv-reference-content {
   flex: 1;
   min-width: 0;
-  padding: 16px 14px;
+  padding: 16px 16px;
   overflow-wrap: anywhere;
 }
 
@@ -330,7 +327,7 @@
 .rv-reference-card > .spread {
   margin-bottom: 16px;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
 }
 
 .rv-list {
@@ -341,7 +338,7 @@
 
 .rv-list > li {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   padding: 12px 0;
   border-bottom: 1px solid var(--border);
 }
@@ -360,13 +357,13 @@
 }
 
 .rv-reference-card .rv-list {
-  margin-top: 14px;
+  margin-top: 16px;
 }
 
 .rv-comment {
   display: grid;
   justify-items: start;
-  gap: 10px;
+  gap: 12px;
 }
 
 .rv-comment > :first-child {
@@ -383,20 +380,29 @@
   place-items: center;
 }
 
-.rv-reference-close {
+.rv-reference[hidden] {
   display: none;
 }
 
-@media (max-width: 1040px) {
+.rv-reference-heading {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.rv-reference-heading h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+@media (max-width: 1365px) {
   .rv-grid {
     grid-template-columns: 220px minmax(0, 1fr);
-  }
-  .rv-reference-close {
-    display: flex;
-    flex: none;
-    justify-content: flex-end;
-    padding: 4px 8px;
-    border-bottom: 1px solid var(--border);
   }
   .rv-reference {
     position: absolute;
@@ -426,4 +432,183 @@
   .rv-evidence-heading {
     flex-wrap: wrap;
   }
+}
+
+.rv-check-decision {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: normal;
+}
+.rv-conclusion-choices {
+  flex: 0 1 auto;
+}
+.rv-conclusion-choices > strong,
+.rv-reasons .secondary,
+.rv-derived-conclusion .secondary {
+  font-size: 12px;
+}
+.rv-conclusion-choices .row,
+.rv-reasons .row {
+  margin-top: 0;
+  gap: 4px;
+}
+.rv-conclusion-content > #review-item-note,
+.rv-conclusion-content > .astryx-banner {
+  flex-basis: 100%;
+}
+.rv-conclusion-content > [role="status"].secondary {
+  font-size: 12px;
+}
+.rv-danger-choice.astryx-button,
+.rv-danger-choice {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.rv-danger-choice.is-selected-danger {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+  outline: 2px solid var(--danger);
+  outline-offset: 2px;
+}
+
+.review-workspace .rv-check-progress {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.review-workspace .rv-check-progress strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.review-workspace .rv-check-progress progress {
+  width: 100%;
+  height: 4px;
+  border: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  accent-color: var(--ink);
+  background: var(--border);
+}
+
+.review-workspace .rv-check-progress progress::-webkit-progress-bar {
+  background: var(--border);
+}
+
+.review-workspace .rv-check-progress progress::-webkit-progress-value {
+  background: var(--ink);
+}
+
+.review-workspace .rv-check-progress progress::-moz-progress-bar {
+  background: var(--ink);
+}
+
+.review-workspace .rv-reference-content .section-title {
+  margin: 0;
+  font-size: 14px;
+}
+
+.workspace-content:has(.qa-detail-workspace) {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: 16px;
+}
+
+.qa-detail-workspace.dv-qa-page {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.qa-detail-workspace .qa-workspace-navigation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  flex: none;
+  gap: 8px 24px;
+  padding: 0 4px;
+}
+
+.qa-detail-workspace .qa-stage-context {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.qa-detail-workspace .qa-stage-context strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.qa-detail-workspace > [role="tabpanel"]:not([hidden]) {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.qa-detail-workspace .qa-evidence-view:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.qa-detail-workspace .dv-qa-evidence-panel:not([hidden]) {
+  display: block;
+  max-height: none;
+}
+
+.qa-detail-workspace .qa-secondary-view:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-bottom: 4px;
+}
+
+.qa-detail-workspace .qa-secondary-view > .panel {
+  flex: none;
+}
+
+.qa-detail-workspace .qa-comparison-actions {
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.qa-detail-workspace .qa-comparison-actions .rv-conclusion-content > span {
+  flex: 1;
+}
+
+.qa-detail-workspace [role="tabpanel"][hidden] {
+  display: none;
+}
+
+.review-workspace.detail-page {
+  gap: 0;
+}
+
+.qa-detail-workspace.dv-qa-page {
+  gap: 8px;
+}
+
+.qa-detail-workspace .dv-qa-evidence > .ui-panel-heading {
+  padding: 8px 16px;
+}
+
+.qa-detail-workspace .dv-qa-evidence > .ui-panel-content {
+  padding: 0 16px 8px;
+}
+
+.qa-detail-workspace .dv-qa-evidence-content > .detail-tabs {
+  flex: none;
 }

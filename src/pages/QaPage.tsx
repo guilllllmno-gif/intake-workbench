@@ -2,8 +2,6 @@ import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { Selector } from "@astryxdesign/core/Selector";
-import { RadioList, RadioListItem } from "@astryxdesign/core/RadioList";
-import { TabList, Tab } from "@astryxdesign/core/TabList";
 import {
   Table,
   proportional,
@@ -12,11 +10,12 @@ import {
   type TableColumn,
   type TablePlugin,
 } from "@astryxdesign/core/Table";
-import { useOrder, useQueueFlow, useSession } from "../hooks";
+import { useDetailView, useOrder, useQueueFlow, useSession } from "../hooks";
 import {
   Confirm,
-  InlineConfirm,
   Badge,
+  DetailSection,
+  DetailTabs,
   Panel,
   Empty,
   IdText,
@@ -24,10 +23,11 @@ import {
   OrderHeader,
   Timeline,
 } from "../ui";
-import { CHECK_LABELS, CHECK_OPTIONS } from "../catalog";
+import { CHECK_LABELS, CHECK_OPTIONS, DECLINE_CONCLUSIONS } from "../catalog";
 import { dateTime } from "../format";
 import EvidencePanel, { emptyEvidenceDraft } from "../components/EvidencePanel";
 import type { CheckItem } from "../types";
+import "../review.css";
 import "./decision-pages.css";
 
 const overallOptions = [
@@ -55,11 +55,19 @@ type ComparisonRow = {
   original: string;
   consistent: boolean;
 };
+const blindViews = ["evidence"] as const;
+const revealedViews = ["evidence", "comparison", "history"] as const;
 
 export default function QaPage() {
   const { data, loading, error, reload, busy, stale, act } = useOrder();
   const { session } = useSession();
   const { next } = useQueueFlow();
+  const revealed =
+    data?.workOrder.status === "COMPARE" || data?.workOrder.status === "CLOSED";
+  const [view, setView] = useDetailView(
+    revealed ? "comparison" : "evidence",
+    revealed ? revealedViews : blindViews,
+  );
   const [conclusions, setConclusions] = useState<Record<string, string>>({});
   const [mismatchReason, setMismatchReason] = useState("");
   const [actions, setActions] = useState<string[]>([]);
@@ -107,14 +115,14 @@ export default function QaPage() {
   const { workOrder: order, qa } = data;
   const evidence = data.evidence || [];
   const checkItems = order.checkItems || [];
-  const revealed = order.status === "COMPARE" || order.status === "CLOSED";
-  const checks = checkItems.length
-    ? checkItems.map((item) => ({
+  const applicationReview = qa?.reviewMode === "APPLICATION";
+  const checks = applicationReview
+    ? [{ id: "overall", title: "整单判断", options: overallOptions }]
+    : checkItems.map((item) => ({
         id: item.id,
         title: item.title,
         options: CHECK_OPTIONS[item.checkType] || [],
-      }))
-    : [{ id: "overall", title: "整单独立判断", options: overallOptions }];
+      }));
   const label = (id: string, value?: string) =>
     checks
       .find((item) => item.id === id)
@@ -154,6 +162,7 @@ export default function QaPage() {
   const validBlind =
     !blocked &&
     order.status === "BLIND" &&
+    checks.length > 0 &&
     checks.every((item) =>
       item.options.some((option) => option.value === conclusions[item.id]),
     );
@@ -180,17 +189,18 @@ export default function QaPage() {
     if (result) setPreview(null);
     if (result?.workOrder.status === "CLOSED") await next(order.id);
   };
-  const independentItems: CheckItem[] = checkItems.length
-    ? checkItems.map((item) => ({
-        id: item.id,
-        title: item.title,
-        checkType: item.checkType,
-        reasonCodes: item.reasonCodes,
-        evidenceIds: item.evidenceIds,
-        status: "PENDING",
-        hasNewEvidence: false,
-      }))
-    : evidence.map((entry) => ({
+  const independentItems: CheckItem[] = checkItems.map((item) => ({
+    id: item.id,
+    title: item.title,
+    checkType: item.checkType,
+    reasonCodes: [],
+    evidenceIds: item.evidenceIds,
+    status: "PENDING",
+    hasNewEvidence: false,
+  }));
+  for (const entry of evidence)
+    if (!checkItems.some((item) => item.evidenceIds.includes(entry.id)))
+      independentItems.push({
         id: entry.id,
         title: CHECK_LABELS[entry.kind],
         checkType: entry.kind,
@@ -198,14 +208,28 @@ export default function QaPage() {
         evidenceIds: [entry.id],
         status: "PENDING",
         hasNewEvidence: false,
-      }));
+      });
   const activeEvidence = independentItems.some(
     (item) => item.id === evidenceTab,
   )
     ? evidenceTab
     : independentItems[0]?.id || "";
+  const activeCheck = applicationReview
+    ? checks[0]
+    : checks.find((item) => item.id === activeEvidence);
+  const completedCount = checks.filter((item) => conclusions[item.id]).length;
+  const nextPending = applicationReview
+    ? undefined
+    : checks.find(
+        (item) => item.id !== activeEvidence && !conclusions[item.id],
+      );
+  const dangerSelected = Boolean(
+    activeCheck &&
+    (conclusions[activeCheck.id] === "DECLINED" ||
+      DECLINE_CONCLUSIONS[conclusions[activeCheck.id]]),
+  );
   const columns: TableColumn<ComparisonRow>[] = [
-    { key: "title", header: "检查项", width: proportional(2) },
+    { key: "title", header: "判断对象", width: proportional(2) },
     { key: "independent", header: "独立结论", width: proportional(1) },
     { key: "original", header: "原结论", width: proportional(1) },
     {
@@ -239,40 +263,13 @@ export default function QaPage() {
             ? "当前状态不可操作"
             : "");
   return (
-    <div className="page dv-page">
-      <OrderHeader
-        data={data}
-        actions={
-          canClaim ? (
-            <InlineConfirm
-              title="领取抽检并开始独立判断？"
-              confirmLabel="领取并继续"
-              disabled={Boolean(primaryBlocked) || busy}
-              onConfirm={() => act("claim")}
-            >
-              <Button
-                label={primaryLabel}
-                variant="primary"
-                isDisabled={Boolean(primaryBlocked) || busy}
-                tooltip={primaryBlocked || undefined}
-              />
-            </InlineConfirm>
-          ) : order.status !== "CLOSED" ? (
-            <Button
-              label={primaryLabel}
-              variant="primary"
-              isDisabled={Boolean(primaryBlocked) || busy}
-              tooltip={primaryBlocked || undefined}
-              onClick={() =>
-                setPreview(order.status === "BLIND" ? "blind" : "complete")
-              }
-            />
-          ) : undefined
-        }
-      />
+    <div
+      className={`page detail-page dv-page dv-qa-page qa-detail-workspace${revealed ? " is-revealed" : ""}`}
+    >
+      <OrderHeader data={data} />
       {error && (
         <div className="dv-notice dv-error" role="alert">
-          {error}
+          {error.message}
         </div>
       )}
       {stale && (
@@ -281,16 +278,168 @@ export default function QaPage() {
           <Button label="刷新" onClick={reload} />
         </div>
       )}
-      <div className="dv-stage-row" aria-label="抽检阶段">
-        <Badge tone={revealed ? "neutral" : "info"}>
-          01 独立判断{revealed ? " · 已锁定" : ""}
-        </Badge>
-        <Badge tone={revealed ? "info" : "neutral"}>
-          02 结论比对{order.status === "CLOSED" ? " · 已完成" : ""}
-        </Badge>
+      <div className="qa-workspace-navigation">
+        <div className="qa-stage-context">
+          <strong>
+            {order.status === "CLOSED"
+              ? "抽检已完成"
+              : revealed
+                ? "比对与纠正"
+                : "独立判断"}
+          </strong>
+          <span className="secondary">
+            {applicationReview ? "整单抽检" : "逐项抽检"} ·{" "}
+            {revealed
+              ? "独立结论已锁定"
+              : `已判断 ${completedCount}/${checks.length}`}
+          </span>
+        </div>
+        <DetailTabs
+          id="qa-workspace"
+          value={view}
+          onChange={setView}
+          label="抽检工作区"
+          compact
+          items={[
+            { value: "evidence", label: revealed ? "证据快照" : "证据与判断" },
+            ...(revealed
+              ? [
+                  {
+                    value: "comparison",
+                    label: "结论比对",
+                    count: comparisons.filter((item) => !item.consistent)
+                      .length,
+                  },
+                  { value: "history", label: "操作记录" },
+                ]
+              : []),
+          ]}
+        />
       </div>
-      {revealed ? (
-        <>
+      <DetailSection
+        id="qa-workspace"
+        value="evidence"
+        active={view}
+        className="dv-qa-workspace qa-evidence-view"
+      >
+        <Panel
+          title={
+            applicationReview
+              ? "整单证据 · 结合全部材料判断"
+              : "证据快照 · 按检查项判断"
+          }
+          className="dv-qa-evidence"
+        >
+          {independentItems.length ? (
+            <div className="dv-stack dv-qa-evidence-content">
+              <DetailTabs
+                id="qa-evidence"
+                value={activeEvidence}
+                onChange={setEvidenceTab}
+                label="抽检证据"
+                compact
+                items={independentItems.map((item) => ({
+                  value: item.id,
+                  label: `${item.title}${!revealed && conclusions[item.id] ? " · 已判断" : ""}`,
+                }))}
+              />
+              {independentItems.map((item) => (
+                <DetailSection
+                  key={item.id}
+                  className="dv-qa-evidence-panel"
+                  id="qa-evidence"
+                  value={item.id}
+                  active={activeEvidence}
+                >
+                  {activeEvidence === item.id && (
+                    <EvidencePanel
+                      evidence={evidence.filter((entry) =>
+                        item.evidenceIds.includes(entry.id),
+                      )}
+                      item={item}
+                      draft={emptyEvidenceDraft()}
+                      onDraft={ignoreDraft}
+                      readOnly
+                      onMedia={async (evidenceId, mediaId) => {
+                        await act("media", { evidenceId, mediaId });
+                      }}
+                    />
+                  )}
+                </DetailSection>
+              ))}
+            </div>
+          ) : (
+            <Empty title="暂无关联证据" description="此样本未关联证据材料。" />
+          )}
+        </Panel>
+        {!revealed && (
+          <section
+            className={`rv-conclusion dv-qa-conclusion${dangerSelected ? " dv-danger-selected" : ""}`}
+            aria-label="独立判断"
+          >
+            <div className="rv-conclusion-content">
+              <div className="dv-qa-judgment">
+                <strong>{activeCheck?.title || "独立判断"}</strong>
+                <div
+                  className="dv-qa-options"
+                  role="group"
+                  aria-label="独立结论"
+                >
+                  {activeCheck?.options.map((option) => (
+                    <Button
+                      key={option.value}
+                      label={option.label}
+                      variant="secondary"
+                      className={`dv-disposition${conclusions[activeCheck.id] === option.value ? " is-selected" : ""}${option.value === "DECLINED" || DECLINE_CONCLUSIONS[option.value] ? " dv-danger-action" : ""}`}
+                      aria-pressed={
+                        conclusions[activeCheck.id] === option.value
+                      }
+                      isDisabled={
+                        Boolean(blocked) || busy || order.status !== "BLIND"
+                      }
+                      tooltip={blocked || undefined}
+                      onClick={() =>
+                        setConclusions((current) => ({
+                          ...current,
+                          [activeCheck.id]: option.value,
+                        }))
+                      }
+                    />
+                  ))}
+                </div>
+              </div>
+              <span className="dv-qa-progress" aria-live="polite">
+                {dangerSelected ? "已选择拒绝类结论 · " : ""}已判断{" "}
+                {completedCount}/{checks.length}
+              </span>
+              {nextPending && (
+                <Button
+                  label="下一待判断项"
+                  variant="ghost"
+                  onClick={() => setEvidenceTab(nextPending.id)}
+                />
+              )}
+              <Button
+                label={primaryLabel}
+                variant="primary"
+                isDisabled={Boolean(primaryBlocked) || busy}
+                tooltip={primaryBlocked || undefined}
+                onClick={() => (canClaim ? act("claim") : setPreview("blind"))}
+              />
+            </div>
+            <p className="dv-qa-blind-note">
+              {blocked || "提交前隐藏原结论与抽样来源，提交后独立结论锁定"}
+            </p>
+          </section>
+        )}
+      </DetailSection>
+      {revealed && (
+        <DetailSection
+          id="qa-workspace"
+          value="comparison"
+          active={view}
+          className="qa-secondary-view"
+        >
           <Panel title="独立结论比对" className="dense-table">
             <Table
               aria-label="独立结论比对"
@@ -392,92 +541,48 @@ export default function QaPage() {
               </dl>
             </Panel>
           )}
-        </>
-      ) : (
-        <Panel
-          title="独立结论"
-          subtitle="提交前不展示原决策或抽样来源；独立结论提交后锁定。"
-        >
-          <div className="dv-qa-choices">
-            {checks.map((item) => (
-              <RadioList
-                key={item.id}
-                label={item.title}
-                isRequired
-                value={conclusions[item.id] || ""}
-                onChange={(value) =>
-                  setConclusions((current) => ({
-                    ...current,
-                    [item.id]: value,
-                  }))
-                }
-                isDisabled={Boolean(blocked) || order.status !== "BLIND"}
-                disabledMessage={blocked || undefined}
-              >
-                {item.options.map((option) => (
-                  <RadioListItem
-                    key={option.value}
-                    value={option.value}
-                    label={option.label}
-                  />
-                ))}
-              </RadioList>
-            ))}
-          </div>
-        </Panel>
+        </DetailSection>
       )}
-      <Panel title="证据">
-        {independentItems.length ? (
-          <div className="dv-stack">
-            <TabList
-              value={activeEvidence}
-              onChange={setEvidenceTab}
-              role="tablist"
-              aria-label="抽检证据"
-              hasDivider
-            >
-              {independentItems.map((item) => (
-                <Tab
-                  key={item.id}
-                  value={item.id}
-                  label={item.title}
-                  panelId={`qa-evidence-${item.id}`}
-                />
-              ))}
-            </TabList>
-            {independentItems.map((item) => (
-              <section
-                key={item.id}
-                id={`qa-evidence-${item.id}`}
-                role="tabpanel"
-                aria-label={item.title}
-                hidden={activeEvidence !== item.id}
-              >
-                {activeEvidence === item.id && (
-                  <EvidencePanel
-                    evidence={evidence.filter((entry) =>
-                      item.evidenceIds.includes(entry.id),
-                    )}
-                    item={item}
-                    draft={emptyEvidenceDraft()}
-                    onDraft={ignoreDraft}
-                    readOnly
-                    onMedia={async (evidenceId, mediaId) => {
-                      await act("media", { evidenceId, mediaId });
-                    }}
-                  />
-                )}
-              </section>
-            ))}
+      {revealed && (
+        <DetailSection
+          id="qa-workspace"
+          value="history"
+          active={view}
+          className="qa-secondary-view"
+        >
+          <Panel title="操作记录">
+            {data.audit?.length ? (
+              <Timeline audit={data.audit} />
+            ) : (
+              <Empty title="暂无操作记录" />
+            )}
+          </Panel>
+        </DetailSection>
+      )}
+      {order.status === "COMPARE" && (
+        <div className="rv-conclusion dv-qa-conclusion qa-comparison-actions">
+          <div className="rv-conclusion-content">
+            <span>
+              {mismatched
+                ? "存在差异，请选择不一致原因与纠正动作"
+                : "独立结论与原结论一致"}
+            </span>
+            {view !== "comparison" && (
+              <Button
+                label="查看结论比对"
+                variant="secondary"
+                onClick={() => setView("comparison")}
+              />
+            )}
+            <Button
+              label="完成抽检"
+              variant="primary"
+              isDisabled={Boolean(primaryBlocked) || busy}
+              tooltip={primaryBlocked || undefined}
+              onClick={() => setPreview("complete")}
+            />
           </div>
-        ) : (
-          <Empty title="暂无关联证据" description="此样本未关联证据材料。" />
-        )}
-      </Panel>
-      {revealed && data.audit && (
-        <Panel title="操作日志">
-          <Timeline audit={data.audit} />
-        </Panel>
+        </div>
       )}
       <Confirm
         open={Boolean(preview)}

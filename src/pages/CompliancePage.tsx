@@ -2,22 +2,28 @@ import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Selector } from "@astryxdesign/core/Selector";
 import { TextArea } from "@astryxdesign/core/TextArea";
-import { TabList, Tab } from "@astryxdesign/core/TabList";
 import { LockKeyhole } from "lucide-react";
-import { useOrder, useQueueFlow, useSession } from "../hooks";
+import { useDetailView, useOrder, useQueueFlow, useSession } from "../hooks";
 import {
   Badge,
   Panel,
   Confirm,
-  InlineConfirm,
   Empty,
   IdText,
   LoadState,
   OrderHeader,
+  OrderSummary,
+  DetailTabs,
+  DetailSection,
   PersonName,
   Timeline,
 } from "../ui";
-import { CHECK_LABELS, CHECK_OPTIONS, reasonName } from "../catalog";
+import {
+  CHECK_LABELS,
+  CHECK_OPTIONS,
+  DECLINE_CONCLUSIONS,
+  reasonName,
+} from "../catalog";
 import { dateTime } from "../format";
 import EvidencePanel, { emptyEvidenceDraft } from "../components/EvidencePanel";
 import type { CheckItem } from "../types";
@@ -44,14 +50,20 @@ export default function CompliancePage() {
   const { session } = useSession();
   const { next } = useQueueFlow();
   const [decision, setDecision] = useState("");
+  const [preview, setPreview] = useState(false);
   const [reason, setReason] = useState("");
   const [excludeReason, setExcludeReason] = useState("");
-  const [tab, setTab] = useState("evidence");
+  const [tab, setTab] = useDetailView(
+    "summary",
+    data?.audit
+      ? ["summary", "evidence", "decisions", "audit"]
+      : ["summary", "evidence", "decisions"],
+  );
   useEffect(() => {
     setDecision("");
+    setPreview(false);
     setReason("");
     setExcludeReason("");
-    setTab("evidence");
   }, [data?.workOrder.id, session.userId, session.role]);
   if (session.role !== "COMPLIANCE_HEAD")
     return (
@@ -101,6 +113,10 @@ export default function CompliancePage() {
     order.type === "RESTRICTED" && order.status === "QUEUED" && !order.assignee;
   const valid =
     !blocked &&
+    Boolean(decision) &&
+    (!waitingSecond ||
+      decision === "DISAGREE" ||
+      decision === order.pendingDecision) &&
     Boolean(reason.trim()) &&
     (decision !== "EXCLUDE" || Boolean(excludeReason));
   const choose = (value: string) => {
@@ -119,6 +135,7 @@ export default function CompliancePage() {
     });
     if (result) {
       setDecision("");
+      setPreview(false);
       if (result.workOrder.status === "CLOSED") await next(order.id);
     }
   };
@@ -145,7 +162,7 @@ export default function CompliancePage() {
             ? "受限工单与原审核工单结案为拒绝，申请变为未通过；商户收到通用拒绝通知。"
             : "受限工单结案为升级案件，生成案件编号；申请继续保持冻结。";
   const externalDecline = waitingSecond && decision === "DECLINE";
-  const action = (value: string, primary = false) => {
+  const action = (value: string) => {
     const reasonBlocked =
       blocked ||
       (waitingSecond && value !== "DISAGREE" && value !== order.pendingDecision
@@ -155,7 +172,9 @@ export default function CompliancePage() {
       <Button
         key={value}
         label={decisionLabels[value]}
-        variant={primary ? "primary" : "secondary"}
+        variant="secondary"
+        className={`dv-disposition${decision === value ? " is-selected" : ""}${value === "DECLINE" ? " dv-danger-action" : ""}`}
+        aria-pressed={decision === value}
         isDisabled={Boolean(reasonBlocked) || busy}
         tooltip={reasonBlocked || undefined}
         onClick={() => choose(value)}
@@ -163,56 +182,15 @@ export default function CompliancePage() {
     );
   };
   return (
-    <div className="page dv-page">
-      <OrderHeader
-        data={data}
-        actions={
-          canClaim ? (
-            <InlineConfirm
-              title="领取受限工单并开始处理？"
-              confirmLabel="领取并继续"
-              disabled={busy || stale || conflict}
-              onConfirm={() => act("claim")}
-            >
-              <Button
-                label="领取受限工单"
-                variant="primary"
-                isDisabled={busy || stale || conflict}
-                tooltip={
-                  conflict
-                    ? "不能处理自己提交或作出原结论的申请"
-                    : stale
-                      ? "工单已更新，请刷新"
-                      : undefined
-                }
-              />
-            </InlineConfirm>
-          ) : order.status !== "CLOSED" ? (
-            <div className="action-row">
-              {action(
-                "EXCLUDE",
-                !waitingSecond || order.pendingDecision === "EXCLUDE",
-              )}
-              {action(
-                "DECLINE",
-                waitingSecond && order.pendingDecision === "DECLINE",
-              )}
-              {action(
-                "CASE",
-                waitingSecond && order.pendingDecision === "CASE",
-              )}
-              {waitingSecond && action("DISAGREE")}
-            </div>
-          ) : undefined
-        }
-      />
+    <div className="page dv-page detail-page dv-decision-page">
+      <OrderHeader data={data} />
       <div className="dv-notice">
         <LockKeyhole size={16} aria-hidden="true" />
         <span>受限内容 · 仅合规负责人可见，不向商户或销售披露处置原因。</span>
       </div>
       {error && (
         <div className="dv-notice dv-error" role="alert">
-          {error}
+          {error.message}
         </div>
       )}
       {stale && (
@@ -221,156 +199,282 @@ export default function CompliancePage() {
           <Button label="刷新" onClick={reload} />
         </div>
       )}
-      {waitingSecond && (
-        <div className="dv-notice dv-warning">
-          <strong>复核进度 1/2</strong>
-          {first && (
-            <PersonName
-              user={first.reviewers.find((user) => user.id === actors[0])}
-            />
-          )}
-          <span>{decisionLabels[order.pendingDecision || ""] || "—"}</span>
-        </div>
-      )}
-      {order.caseId && (
-        <div className="dv-notice">
-          <span>案件编号</span>
-          <IdText value={order.caseId} />
-          <span>申请保持冻结</span>
-        </div>
-      )}
-      <Panel title="转受限原因与审核备注">
-        <dl className="details-grid">
-          <div className="dv-full">
-            <dt>转受限原因</dt>
-            <dd>
-              {order.restrictedReason ||
-                (order.reasonCodes || []).map(reasonName).join("、") ||
-                "—"}
-            </dd>
-          </div>
-          <div>
-            <dt>转入时间</dt>
-            <dd>{dateTime(order.frozenAt || order.createdAt)}</dd>
-          </div>
-          <div>
-            <dt>原审核员</dt>
-            <dd>
-              <PersonName user={order.originalAssignee} />
-            </dd>
-          </div>
-          <div className="dv-full">
-            <dt>合规备注</dt>
-            <dd>{order.complianceNote || "—"}</dd>
-          </div>
-        </dl>
-        <div className="dv-two-columns">
-          {checks.map((item) => (
-            <div key={item.id} className="dv-reason">
-              <div className="row">
-                <strong>{item.title}</strong>
-                <Badge>
-                  {CHECK_OPTIONS[item.checkType]?.find(
-                    (option) => option.value === item.conclusion,
-                  )?.label || "—"}
-                </Badge>
-                <PersonName user={item.decidedBy} />
-              </div>
-              <p>{item.conclusionReason || "—"}</p>
-              {item.note && <p>{item.note}</p>}
-            </div>
-          ))}
-        </div>
-      </Panel>
-      <TabList
+      <DetailTabs
+        id="restricted-detail"
         value={tab}
         onChange={setTab}
-        role="tablist"
-        aria-label="受限工单详情"
-        hasDivider
-      >
-        <Tab value="evidence" label="筛查证据" panelId="restricted-evidence" />
-        <Tab
-          value="decisions"
-          label="处置记录"
-          panelId="restricted-decisions"
-        />
-        {data.audit && (
-          <Tab value="audit" label="操作日志" panelId="restricted-audit" />
-        )}
-      </TabList>
-      <section
-        id="restricted-evidence"
-        role="tabpanel"
-        aria-label="筛查证据"
-        hidden={tab !== "evidence"}
-      >
-        {panels.length ? (
-          <div className="dv-stack">
-            {panels.map((item) => (
-              <Panel title={item.title} key={item.id}>
-                <EvidencePanel
-                  evidence={evidence.filter((entry) =>
-                    item.evidenceIds.includes(entry.id),
-                  )}
-                  item={item}
-                  draft={emptyEvidenceDraft()}
-                  onDraft={ignoreDraft}
-                  readOnly
-                  onMedia={async (evidenceId, mediaId) => {
-                    await act("media", { evidenceId, mediaId });
-                  }}
-                />
-              </Panel>
-            ))}
-          </div>
-        ) : (
-          <Empty title="暂无筛查证据" description="此工单尚未关联证据。" />
-        )}
-      </section>
-      <section
-        id="restricted-decisions"
-        role="tabpanel"
-        aria-label="处置记录"
-        hidden={tab !== "decisions"}
-      >
-        {data.restrictedDecisions?.length ? (
-          <Panel>
-            <div className="dv-stack">
-              {data.restrictedDecisions.map((entry) => (
-                <div className="dv-record" key={entry.id}>
-                  <div className="row">
-                    <Badge>
-                      {decisionLabels[entry.decision] || "处置意见"}
-                    </Badge>
-                    {entry.reviewers.map((user) => (
-                      <PersonName key={user.id} user={user} />
-                    ))}
-                    <span className="secondary">{dateTime(entry.at)}</span>
-                  </div>
-                  <p>{entry.reason}</p>
+        label="受限工单详情"
+        items={[
+          { value: "summary", label: "转入原因与摘要" },
+          { value: "evidence", label: "筛查证据", count: evidence.length },
+          {
+            value: "decisions",
+            label: "处置记录",
+            count: data.restrictedDecisions?.length || 0,
+          },
+          ...(data.audit ? [{ value: "audit", label: "操作日志" }] : []),
+        ]}
+      />
+      <div className="detail-layout">
+        <div className="detail-main">
+          <DetailSection id="restricted-detail" value="summary" active={tab}>
+            <Panel title="转受限原因与审核备注">
+              <dl className="details-grid">
+                <div className="dv-full">
+                  <dt>转受限原因</dt>
+                  <dd>
+                    {order.restrictedReason ||
+                      (order.reasonCodes || []).map(reasonName).join("、") ||
+                      "—"}
+                  </dd>
                 </div>
-              ))}
+                <div>
+                  <dt>转入时间</dt>
+                  <dd>{dateTime(order.frozenAt || order.createdAt)}</dd>
+                </div>
+                <div>
+                  <dt>原审核员</dt>
+                  <dd>
+                    <PersonName user={order.originalAssignee} />
+                  </dd>
+                </div>
+                <div className="dv-full">
+                  <dt>合规备注</dt>
+                  <dd>{order.complianceNote || "—"}</dd>
+                </div>
+              </dl>
+            </Panel>
+            <Panel title="原检查项结论摘要">
+              <div className="dv-two-columns">
+                {checks.map((item) => (
+                  <div key={item.id} className="dv-reason">
+                    <div className="row">
+                      <strong>{item.title}</strong>
+                      <Badge
+                        tone={
+                          DECLINE_CONCLUSIONS[item.conclusion || ""]
+                            ? "danger"
+                            : "neutral"
+                        }
+                      >
+                        {CHECK_OPTIONS[item.checkType]?.find(
+                          (option) => option.value === item.conclusion,
+                        )?.label || "—"}
+                      </Badge>
+                      <PersonName user={item.decidedBy} />
+                    </div>
+                    <dl className="details-grid">
+                      <div>
+                        <dt>结论依据</dt>
+                        <dd>{item.conclusionReason || "—"}</dd>
+                      </div>
+                      <div>
+                        <dt>检查项备注</dt>
+                        <dd>{item.note || "—"}</dd>
+                      </div>
+                    </dl>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+          </DetailSection>
+          <DetailSection id="restricted-detail" value="evidence" active={tab}>
+            {panels.length ? (
+              <div className="dv-stack">
+                {panels.map((item) => (
+                  <Panel title={item.title} key={item.id}>
+                    <EvidencePanel
+                      evidence={evidence.filter((entry) =>
+                        item.evidenceIds.includes(entry.id),
+                      )}
+                      item={item}
+                      draft={emptyEvidenceDraft()}
+                      onDraft={ignoreDraft}
+                      readOnly
+                      onMedia={async (evidenceId, mediaId) => {
+                        await act("media", { evidenceId, mediaId });
+                      }}
+                    />
+                  </Panel>
+                ))}
+              </div>
+            ) : (
+              <Empty title="暂无筛查证据" description="此工单尚未关联证据。" />
+            )}
+          </DetailSection>
+          <DetailSection id="restricted-detail" value="decisions" active={tab}>
+            {data.restrictedDecisions?.length ? (
+              <Panel>
+                <div className="dv-stack">
+                  {data.restrictedDecisions.map((entry) => (
+                    <div className="dv-record" key={entry.id}>
+                      <div className="row">
+                        <Badge
+                          tone={
+                            entry.decision === "DECLINE" ? "danger" : "neutral"
+                          }
+                        >
+                          {decisionLabels[entry.decision] || "处置意见"}
+                        </Badge>
+                        {entry.reviewers.map((user) => (
+                          <PersonName key={user.id} user={user} />
+                        ))}
+                        <span className="secondary">{dateTime(entry.at)}</span>
+                      </div>
+                      <p>{entry.reason}</p>
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+            ) : (
+              <Empty
+                title="暂无处置记录"
+                description="提交处置意见后显示记录。"
+              />
+            )}
+          </DetailSection>
+          {data.audit && (
+            <DetailSection id="restricted-detail" value="audit" active={tab}>
+              <Panel title="操作日志">
+                <Timeline audit={data.audit} />
+              </Panel>
+            </DetailSection>
+          )}
+        </div>
+        <aside className="detail-aside dv-decision-aside">
+          <OrderSummary
+            data={data}
+            title="当前处置"
+            actions={
+              canClaim ? (
+                <Button
+                  label="领取受限工单"
+                  variant="primary"
+                  isDisabled={busy || stale || conflict}
+                  tooltip={
+                    conflict
+                      ? "不能处理自己提交或作出原结论的申请"
+                      : stale
+                        ? "工单已更新，请刷新"
+                        : undefined
+                  }
+                  onClick={() => act("claim")}
+                />
+              ) : undefined
+            }
+          >
+            <div className="dv-stack">
+              {waitingSecond && (
+                <div className="dv-notice dv-warning">
+                  <strong>复核进度 1/2</strong>
+                  {first && (
+                    <PersonName
+                      user={first.reviewers.find(
+                        (user) => user.id === actors[0],
+                      )}
+                    />
+                  )}
+                  <Badge
+                    tone={
+                      order.pendingDecision === "DECLINE" ? "danger" : "neutral"
+                    }
+                  >
+                    {decisionLabels[order.pendingDecision || ""] || "—"}
+                  </Badge>
+                </div>
+              )}
+              {order.caseId && (
+                <div className="dv-notice">
+                  <span>案件编号</span>
+                  <IdText value={order.caseId} />
+                  <span>申请保持冻结</span>
+                </div>
+              )}
+              <p className="secondary dv-context-copy">
+                {order.status === "CLOSED"
+                  ? "处置已完成，可查看处置记录与操作日志。"
+                  : blocked ||
+                    (waitingSecond
+                      ? "请确认第一位处置意见，或退回重新研判。"
+                      : "核对转入原因与筛查证据后提交意见，申请在双人确认前保持冻结。")}
+              </p>
+              <Button
+                label="查看筛查证据"
+                variant="ghost"
+                className="detail-shortcut"
+                onClick={() => setTab("evidence")}
+              />
             </div>
-          </Panel>
-        ) : (
-          <Empty title="暂无处置记录" description="提交处置意见后显示记录。" />
-        )}
-      </section>
-      {data.audit && (
-        <section
-          id="restricted-audit"
-          role="tabpanel"
-          aria-label="操作日志"
-          hidden={tab !== "audit"}
-        >
-          <Panel>
-            <Timeline audit={data.audit} />
-          </Panel>
-        </section>
-      )}
+          </OrderSummary>
+          {order.status !== "CLOSED" && (
+            <Panel title="受限处置" className="detail-context dv-treatment">
+              <div className="dv-stack">
+                <div
+                  className="dv-dispositions"
+                  role="group"
+                  aria-label="选择处置结果"
+                >
+                  {action("EXCLUDE")}
+                  {action("DECLINE")}
+                  {action("CASE")}
+                  {waitingSecond && action("DISAGREE")}
+                </div>
+                <p
+                  className={
+                    decision === "DECLINE" ? "dv-danger-selection" : "secondary"
+                  }
+                  aria-live="polite"
+                >
+                  {decision
+                    ? `已选择：${decisionLabels[decision]}`
+                    : "请选择处置结果并填写依据，选择不会提交"}
+                </p>
+                <div className="dv-form-grid">
+                  {decision === "EXCLUDE" && (
+                    <Selector
+                      label="排除原因"
+                      isRequired
+                      options={exclusionOptions}
+                      value={excludeReason || undefined}
+                      onChange={setExcludeReason}
+                      placeholder="选择排除依据"
+                      isDisabled={Boolean(blocked) || busy}
+                    />
+                  )}
+                  <TextArea
+                    label="处置依据"
+                    isRequired
+                    value={reason}
+                    onChange={setReason}
+                    rows={2}
+                    placeholder="填写证据与处置依据"
+                    isDisabled={Boolean(blocked) || busy}
+                  />
+                </div>
+                <div className="row between">
+                  <span className="secondary">
+                    {blocked ||
+                      (waitingSecond
+                        ? "请确认第一位处置意见，或退回重新研判"
+                        : "提交后仍须由另一位合规负责人复核，申请保持冻结")}
+                  </span>
+                  <Button
+                    label="提交处置"
+                    variant="secondary"
+                    className={
+                      decision === "DECLINE" ? "dv-danger-action" : undefined
+                    }
+                    isDisabled={!valid || busy}
+                    onClick={() => setPreview(true)}
+                  />
+                </div>
+              </div>
+            </Panel>
+          )}
+        </aside>
+      </div>
       <Confirm
-        open={Boolean(decision)}
+        open={preview}
         title={`${decisionLabels[decision] || "受限处置"} · 后果预览`}
         description={description}
         merchant={
@@ -386,31 +490,31 @@ export default function CompliancePage() {
         }
         confirmLabel={`确认${decision === "DECLINE" ? "拒绝" : decisionLabels[decision] || "提交"}`}
         onConfirm={submit}
-        onClose={() => setDecision("")}
+        onClose={() => setPreview(false)}
         busy={busy}
         confirmDisabled={!valid}
         danger={decision === "DECLINE"}
       >
-        <div className="dv-stack">
+        <dl className="details-grid">
+          <div>
+            <dt>处置结果</dt>
+            <dd>
+              <Badge tone={decision === "DECLINE" ? "danger" : "neutral"}>
+                {decisionLabels[decision]}
+              </Badge>
+            </dd>
+          </div>
           {decision === "EXCLUDE" && (
-            <Selector
-              label="排除原因"
-              isRequired
-              options={exclusionOptions}
-              value={excludeReason || undefined}
-              onChange={setExcludeReason}
-              placeholder="选择排除依据"
-            />
+            <div>
+              <dt>排除原因</dt>
+              <dd>{excludeReason}</dd>
+            </div>
           )}
-          <TextArea
-            label="处置依据"
-            isRequired
-            value={reason}
-            onChange={setReason}
-            rows={3}
-            placeholder="填写证据与处置依据"
-          />
-        </div>
+          <div className="dv-full">
+            <dt>处置依据</dt>
+            <dd>{reason}</dd>
+          </div>
+        </dl>
       </Confirm>
     </div>
   );

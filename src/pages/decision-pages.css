@@ -43,7 +43,7 @@
 .dv-reason > div,
 .dv-reason > p,
 .dv-record > p {
-  margin: 6px 0 0;
+  margin: 8px 0 0;
 }
 
 .dv-notice {
@@ -72,12 +72,6 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
-}
-
-.dv-qa-choices {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 24px;
 }
 
 .dv-checkboxes {
@@ -124,4 +118,226 @@
 
 .dv-page .dv-mismatch > td {
   background: color-mix(in srgb, var(--danger) 5%, var(--surface));
+}
+
+.dv-source-check {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.dv-dispositions,
+.dv-qa-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dv-dispositions > .astryx-button {
+  flex: 1;
+  min-width: 144px;
+}
+
+.dv-disposition.astryx-button.is-selected {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+  background: var(--canvas);
+}
+
+.dv-danger-action.astryx-button {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.dv-danger-action.astryx-button.is-selected {
+  outline-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+}
+
+.dv-danger-selection,
+.dv-qa-conclusion.dv-danger-selected {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 6%, var(--surface));
+  border-inline-start: 4px solid var(--danger);
+}
+
+.dv-danger-selection {
+  margin: 0;
+  padding: 8px 12px;
+  font-weight: 600;
+}
+
+.dv-decision-page .dv-decision-aside {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.dv-decision-page .dv-context-copy {
+  margin: 0;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.dv-decision-page .dv-decision-aside .dv-notice {
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.dv-decision-page .dv-approval-actions,
+.dv-decision-page .dv-treatment .dv-dispositions,
+.dv-decision-page .dv-treatment .dv-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.dv-decision-page .dv-approval-actions > .astryx-button,
+.dv-decision-page .dv-treatment .dv-dispositions > .astryx-button {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+}
+
+.dv-decision-page .dv-treatment .dv-form-grid {
+  gap: 16px;
+}
+
+.dv-decision-page .dv-treatment .dv-stack > p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.dv-decision-page .dv-treatment .row.between {
+  display: grid;
+  gap: 12px;
+}
+
+@media (min-width: 1181px) and (max-height: 1000px) {
+  .dv-decision-page .dv-decision-aside {
+    position: static;
+  }
+}
+
+@media (min-width: 1181px) and (max-width: 1400px) {
+  .dv-decision-page .detail-main .dv-two-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.dv-qa-page {
+  gap: 8px;
+}
+
+.dv-qa-page:not(.is-revealed) {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.dv-qa-page > .order-header,
+.dv-qa-page > .dv-stage-row,
+.dv-qa-page > .dv-notice {
+  flex: none;
+}
+
+.dv-qa-workspace,
+.dv-qa-evidence,
+.dv-qa-evidence > .ui-panel-content,
+.dv-qa-evidence-content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.dv-qa-workspace {
+  flex: 1;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.dv-qa-evidence {
+  flex: 1;
+  border: 0;
+  border-radius: 0;
+  overflow: hidden;
+}
+
+.dv-qa-evidence > .ui-panel-heading {
+  flex: none;
+  padding: 8px 16px;
+}
+
+.dv-qa-evidence > .ui-panel-content,
+.dv-qa-evidence-content {
+  flex: 1;
+}
+
+.dv-qa-evidence > .ui-panel-content {
+  padding: 0 16px 8px;
+}
+
+.dv-qa-evidence-content {
+  gap: 8px;
+}
+
+.dv-qa-evidence-content > [role="tablist"] {
+  flex: none;
+}
+
+.dv-qa-evidence-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.dv-qa-evidence-panel[hidden] {
+  display: none;
+}
+
+.dv-qa-conclusion.rv-conclusion {
+  max-height: none;
+  padding: 8px 16px;
+}
+
+.dv-qa-conclusion > .rv-conclusion-content,
+.dv-qa-judgment {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.dv-qa-judgment {
+  flex: 1;
+  min-width: 0;
+}
+
+.dv-qa-progress {
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.dv-qa-blind-note {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dv-qa-page.is-revealed .dv-qa-workspace {
+  flex: none;
+}
+
+.dv-qa-page.is-revealed .dv-qa-evidence-panel {
+  max-height: 56vh;
+}
+
+@media (max-width: 900px) {
+  .dv-qa-judgment {
+    flex-basis: 100%;
+  }
 }

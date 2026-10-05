@@ -5,7 +5,7 @@ import {
   CheckboxList,
   CheckboxListItem,
 } from "@astryxdesign/core/CheckboxList";
-import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { Dialog } from "@astryxdesign/core/Dialog";
 import { RadioList, RadioListItem } from "@astryxdesign/core/RadioList";
 import { Selector } from "@astryxdesign/core/Selector";
 import {
@@ -20,7 +20,14 @@ import { TreeList, type TreeListItemData } from "@astryxdesign/core/TreeList";
 import { Lock } from "lucide-react";
 import { CHECK_OPTIONS } from "../catalog";
 import { useSession } from "../hooks";
-import { Badge, Empty, FileUpload, IdText, PersonName } from "../ui";
+import {
+  Badge,
+  DialogHeader,
+  Empty,
+  FileUpload,
+  IdText,
+  PersonName,
+} from "../ui";
 import { countryName, dateTime, mccName, statusLabel } from "../format";
 import type { CheckItem, Evidence, UploadedFile } from "../types";
 import "./evidence.css";
@@ -183,6 +190,8 @@ function Comparison({
           <span className="secondary">无记录</span>
         ) : (
           <span
+            title={row.source ? `来源：${row.source}` : undefined}
+            tabIndex={row.source ? 0 : undefined}
             className={
               matchedFields.includes(row.field) ? "ev-match" : undefined
             }
@@ -194,22 +203,15 @@ function Comparison({
     ...(detail
       ? [
           {
-            key: "source",
-            header: "来源",
-            width: proportional(1),
-            renderCell: (row: Row) => text(row.source),
-          },
-          {
             key: "difference",
-            header: "差异",
+            header: "差异 / 容差",
             width: proportional(1),
-            renderCell: (row: Row) => text(row.difference),
-          },
-          {
-            key: "tolerance",
-            header: "容差判断",
-            width: proportional(1),
-            renderCell: (row: Row) => text(row.tolerance),
+            renderCell: (row: Row) => (
+              <span>
+                {[row.difference, row.tolerance].filter(Boolean).join(" · ") ||
+                  "—"}
+              </span>
+            ),
           },
         ]
       : [
@@ -283,7 +285,8 @@ const entityRows = (
       key === "country" && b[key] ? countryName(String(b[key])) : b[key],
   }));
 const safeUrl = (url?: string) =>
-  !!url && /^(https?:|data:image\/|data:application\/pdf|blob:)/i.test(url);
+  !!url &&
+  /^(https?:|data:image\/|data:application\/pdf|blob:|\/(?![\/\\]))/i.test(url);
 function EvidenceFacts({
   entries,
 }: {
@@ -453,6 +456,7 @@ function WatchlistEvidence({
   const [selected, setSelected] = useState<string[]>([]);
   const [bulkReason, setBulkReason] = useState("");
   const [message, setMessage] = useState("");
+  const [bulkOpen, setBulkOpen] = useState(false);
   const hits: WatchHit[] = source.fields.hits ?? [];
   const activeHit = hits.find((hit) => hit.id === active) ?? hits[0];
   const eligible = hits.filter((hit) =>
@@ -476,12 +480,25 @@ function WatchlistEvidence({
   };
   return (
     <>
-      <p className="ev-summary">
-        潜在命中 <strong>{hits.length}</strong> 项 · 已完成{" "}
-        {hits.filter(complete).length} 项
-      </p>
-      {hits.length > 1 && (
-        <Card padding={3} className="ev-bulk-hits">
+      <div className="ev-watch-toolbar">
+        <span aria-live="polite">
+          潜在命中 {hits.length} 项 ·{" "}
+          {hits.every(complete) ? "已完成" : "未完成"}{" "}
+          {hits.filter(complete).length}/{hits.length}
+        </span>
+        {hits.length > 1 && (
+          <Button
+            label="批量处置"
+            size="sm"
+            variant="secondary"
+            aria-expanded={bulkOpen}
+            aria-controls={`${panelId}-bulk`}
+            onClick={() => setBulkOpen(!bulkOpen)}
+          />
+        )}
+      </div>
+      {hits.length > 1 && bulkOpen && (
+        <Card padding={3} className="ev-bulk-hits" id={`${panelId}-bulk`}>
           <h4 className="ev-card-title">批量判为误命中</h4>
           <p className="ev-secondary">
             仅弱匹配和中匹配可多选；强匹配必须逐项审核。应用会覆盖所选命中的草稿处置，不会直接提交。
@@ -605,7 +622,7 @@ function WatchlistEvidence({
               entries={[
                 {
                   label: "名单来源",
-                  value: text(hit.source ?? source.sourceRef),
+                  value: hit.listName,
                 },
                 { label: "名单项目", value: text(hit.program ?? hit.listName) },
                 { label: "列入日期", value: text(hit.listedAt) },
@@ -623,6 +640,7 @@ function WatchlistEvidence({
             <div className="ev-form">
               <RadioList
                 label="命中处置"
+                orientation="horizontal"
                 value={decision.conclusion}
                 isDisabled={readOnly}
                 onChange={(conclusion) =>
@@ -819,6 +837,14 @@ function DataMatchViewer({
   );
 }
 
+type IdentityCheck = {
+  name: string;
+  passed: boolean;
+  reason?: string;
+  mediaId?: string;
+  region?: { x: number; y: number; width: number; height: number };
+};
+
 function MediaCard({
   evidence,
   media,
@@ -853,17 +879,36 @@ function MediaCard({
     revealed.media.id !== media.id
       ? media
       : revealed.media;
+  const failures = ((evidence.fields.checks ?? []) as IdentityCheck[]).filter(
+    (check) => !check.passed && check.mediaId === media.id && check.region,
+  );
   return (
     <Card padding={3} className="ev-media-card">
       <h4 className="ev-card-title">{media.label}</h4>
       {shown.url && safeUrl(shown.url) ? (
         <div className="ev-identity-viewport">
-          <div className="ev-identity-canvas" style={{ width: `${zoom}%` }}>
-            <img
-              src={shown.url}
-              alt={media.label}
-              style={{ transform: `rotate(${rotation}deg)` }}
-            />
+          <div
+            className="ev-identity-canvas"
+            style={{ width: `${zoom}%`, transform: `rotate(${rotation}deg)` }}
+          >
+            <img src={shown.url} alt={media.label} />
+            {failures.map((check) => (
+              <span
+                key={check.name}
+                className="ev-identity-region"
+                tabIndex={0}
+                aria-label={`${check.name}失败：${check.reason ?? "需人工核验"}`}
+                title={`${check.name}：${check.reason ?? "需人工核验"}`}
+                style={{
+                  left: `${check.region!.x}%`,
+                  top: `${check.region!.y}%`,
+                  width: `${check.region!.width}%`,
+                  height: `${check.region!.height}%`,
+                }}
+              >
+                <span>{check.name}</span>
+              </span>
+            ))}
           </div>
         </div>
       ) : (
@@ -925,15 +970,23 @@ function IdentityViewer({
   const remaining = evidence.mediaRefs.filter(
     (media) => media !== front && media !== selfie,
   );
-  const checks = [
-    ...((evidence.fields.checks ?? []) as {
-      name: string;
-      passed: boolean;
-      reason?: string;
-    }[]),
-  ].sort((a, b) => Number(a.passed) - Number(b.passed));
+  const checks = [...((evidence.fields.checks ?? []) as IdentityCheck[])].sort(
+    (a, b) => Number(a.passed) - Number(b.passed),
+  );
   return (
     <>
+      {checks.some((check) => !check.passed) && (
+        <div className="ev-identity-failure-summary" role="status">
+          <strong>检查失败</strong>
+          {checks
+            .filter((check) => !check.passed)
+            .map((check) => (
+              <span key={check.name}>
+                {check.name}：{check.reason ?? "需人工核验"}
+              </span>
+            ))}
+        </div>
+      )}
       <div className="ev-zoom-toolbar" role="group" aria-label="影像同步缩放">
         <strong>同步缩放</strong>
         <Button
@@ -1563,7 +1616,25 @@ export default function EvidencePanel({
             <Comparison
               left="本申请"
               right="匹配到的记录"
-              rows={entityRows(fields.subject ?? {}, matched)}
+              rows={[
+                ...entityRows(fields.subject ?? {}, matched),
+                ...((matched.matchedFields ?? []) as string[])
+                  .filter(
+                    (key) =>
+                      ![
+                        "name",
+                        "aliases",
+                        "country",
+                        "registrationNo",
+                        "incorporatedAt",
+                      ].includes(key),
+                  )
+                  .map((key) => ({
+                    field: labels[key] ?? key,
+                    declared: fields.subject?.[key],
+                    evidence: matched[key],
+                  })),
+              ]}
               matchedFields={(matched.matchedFields ?? []).map(
                 (key: string) => labels[key] ?? key,
               )}

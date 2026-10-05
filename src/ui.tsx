@@ -4,6 +4,7 @@ import {
   useEffect,
   useId,
   useState,
+  type ComponentProps,
   type ReactElement,
   type ReactNode,
 } from "react";
@@ -12,7 +13,10 @@ import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
 import { Collapsible } from "@astryxdesign/core/Collapsible";
-import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import {
+  Dialog,
+  DialogHeader as AstryxDialogHeader,
+} from "@astryxdesign/core/Dialog";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Field as AstryxField } from "@astryxdesign/core/Field";
 import { FileInput } from "@astryxdesign/core/FileInput";
@@ -21,23 +25,30 @@ import { Link as AstryxLink } from "@astryxdesign/core/Link";
 import { Popover } from "@astryxdesign/core/Popover";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Skeleton } from "@astryxdesign/core/Skeleton";
+import { TabList, Tab } from "@astryxdesign/core/TabList";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import {
+  ArrowLeft,
+  Building2,
   Check,
   Copy,
   Download,
   Eye,
   Inbox,
   LockKeyhole,
+  Info,
   RotateCw,
   Trash2,
 } from "lucide-react";
 import "./ui.css";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { getQueueContext, useSession } from "./hooks";
+import { homePath } from "./access";
+import { ApiError } from "./api";
 import { CHECK_LABELS, CHECK_OPTIONS } from "./catalog";
 import {
   countryName,
+  merchantTradingName,
   dateTime,
   deadlineDate,
   duration,
@@ -51,7 +62,9 @@ import {
 } from "./format";
 import type {
   AuditLog,
+  CommunicationLanguage,
   OrderDetail,
+  Session,
   Status,
   UploadedFile,
   UserRef,
@@ -117,6 +130,17 @@ export function Badge({
     />
   );
 }
+export function DialogHeader({
+  className = "",
+  ...props
+}: ComponentProps<typeof AstryxDialogHeader>) {
+  return (
+    <AstryxDialogHeader
+      {...props}
+      className={`ui-dialog-header ${className}`}
+    />
+  );
+}
 export function Panel({
   title,
   subtitle,
@@ -143,6 +167,119 @@ export function Panel({
       )}
       <div className="ui-panel-content">{children}</div>
     </Card>
+  );
+}
+
+export function DetailTabs({
+  id,
+  value,
+  onChange,
+  items,
+  label = "详情分区",
+  compact = false,
+}: {
+  id: string;
+  value: string;
+  onChange: (value: string) => void;
+  items: { value: string; label: string; count?: number }[];
+  label?: string;
+  compact?: boolean;
+}) {
+  return (
+    <div className={`detail-tabs${compact ? " is-compact" : ""}`}>
+      <TabList
+        role="tablist"
+        aria-label={label}
+        value={value}
+        onChange={onChange}
+        hasDivider
+      >
+        {items.map((item) => (
+          <Tab
+            key={item.value}
+            id={`${id}-tab-${item.value}`}
+            panelId={`${id}-panel-${item.value}`}
+            value={item.value}
+            label={
+              item.count === undefined
+                ? item.label
+                : `${item.label} · ${item.count}`
+            }
+          />
+        ))}
+      </TabList>
+    </div>
+  );
+}
+
+export function DetailSection({
+  id,
+  value,
+  active,
+  children,
+  className = "",
+}: {
+  id: string;
+  value: string;
+  active: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <section
+      id={`${id}-panel-${value}`}
+      role="tabpanel"
+      aria-labelledby={`${id}-tab-${value}`}
+      tabIndex={0}
+      hidden={active !== value}
+      className={`detail-section ${className}`}
+    >
+      {children}
+    </section>
+  );
+}
+
+export function OrderSummary({
+  data,
+  title = "当前处理",
+  children,
+  actions,
+}: {
+  data: OrderDetail;
+  title?: string;
+  children?: ReactNode;
+  actions?: ReactNode;
+}) {
+  const order = data.workOrder;
+  const closed = ["CLOSED", "DONE", "CLOSED_NO_RESPONSE", "WITHDRAWN"].includes(
+    order.status,
+  );
+  return (
+    <Panel title={title} className="detail-context">
+      <div className="detail-summary-heading">
+        <strong>
+          {order.status === "PENDING_APPROVAL"
+            ? "审批"
+            : TYPE_LABELS[order.type]}
+          工单
+        </strong>
+        <StatusBadge status={order.status} />
+      </div>
+      <dl className="detail-summary-facts">
+        <div>
+          <dt>处理人</dt>
+          <dd>
+            {order.assignee ? <PersonName user={order.assignee} /> : "待领取"}
+          </dd>
+        </div>
+        <div>
+          <dt>{closed ? "处理状态" : "SLA 剩余"}</dt>
+          <dd>{closed ? "已结束" : <Sla order={order} />}</dd>
+        </div>
+      </dl>
+      {children}
+      {actions && <div className="detail-context-actions">{actions}</div>}
+    </Panel>
   );
 }
 export function Field({
@@ -259,10 +396,13 @@ export function LoadState({
   children,
 }: {
   loading: boolean;
-  error: string;
+  error: Error | string | null;
   retry: () => void;
   children: ReactNode;
 }) {
+  const { session } = useSession();
+  const navigate = useNavigate();
+  const denied = error instanceof ApiError && error.status === 403;
   if (loading)
     return (
       <div className="load-state" role="status" aria-label="加载中">
@@ -280,12 +420,16 @@ export function LoadState({
     return (
       <Banner
         className="load-error"
-        status="error"
-        icon={error.includes("权限") ? <LockKeyhole size={18} /> : undefined}
-        title={error.includes("权限") ? "无访问权限" : "加载失败"}
-        description={error}
+        status={denied ? "warning" : "error"}
+        icon={denied ? <LockKeyhole size={20} /> : undefined}
+        title={denied ? "无访问权限" : "加载失败"}
+        description={error instanceof Error ? error.message : error}
         endContent={
-          <Button label="重试" icon={<RotateCw size={16} />} onClick={retry} />
+          <Button
+            label={denied ? "返回我的待办" : "重试"}
+            icon={denied ? undefined : <RotateCw size={16} />}
+            onClick={denied ? () => navigate(homePath(session.role)) : retry}
+          />
         }
       />
     );
@@ -323,7 +467,12 @@ export function InlineConfirm({
         setError("");
         setOpen(value);
       }}
-      width={300}
+      placement="below"
+      alignment="end"
+      width="min(320px, calc(100vw - 32px))"
+      padding={4}
+      closeButtonLabel="关闭确认气泡"
+      className="ui-confirm-popover"
       content={
         <div className="inline-confirm">
           <strong>{title}</strong>
@@ -445,30 +594,38 @@ export function Confirm({
   );
 }
 export { STATUS_LABELS } from "./format";
-export function StatusBadge({ status }: { status: Status }) {
-  return (
-    <Badge
-      tone={
-        ["CLOSED", "DONE"].includes(status)
-          ? "success"
-          : ["COMPLIANCE_HOLD", "CLOSED_NO_RESPONSE"].includes(status)
-            ? "danger"
-            : [
-                  "WAITING_MERCHANT",
-                  "WAITING_SUPPLEMENT",
-                  "PENDING_SECOND",
-                  "PENDING_APPROVAL",
-                  "TO_CHECK",
-                ].includes(status)
-              ? "warning"
-              : ["IN_PROGRESS", "BLIND", "COMPARE"].includes(status)
-                ? "info"
-                : "neutral"
-      }
-    >
-      {statusLabel(status)}
-    </Badge>
-  );
+export function StatusBadge({
+  status,
+}: {
+  status: Status | OrderDetail["application"]["externalStatus"] | "可交易";
+}) {
+  let tone: ComponentProps<typeof Badge>["tone"] = "neutral";
+  switch (status) {
+    case "COMPLIANCE_HOLD":
+    case "未通过":
+      tone = "danger";
+      break;
+    case "WAITING_MERCHANT":
+    case "WAITING_SUPPLEMENT":
+    case "WAITING_CHANNEL":
+    case "WAITING_COMPLIANCE":
+    case "PENDING_SECOND":
+    case "PENDING_APPROVAL":
+    case "资料待补充":
+      tone = "warning";
+      break;
+    case "IN_PROGRESS":
+    case "TO_CHECK":
+    case "BLIND":
+    case "COMPARE":
+    case "审核中":
+      tone = "info";
+      break;
+    case "已通过":
+    case "可交易":
+      tone = "success";
+  }
+  return <Badge tone={tone}>{statusLabel(status)}</Badge>;
 }
 export function Sla({
   order,
@@ -710,44 +867,166 @@ export function OrderHeader({
               children: <PersonName user={w.assignee} />,
             },
           ];
-  return (
-    <header className="order-header">
-      <nav className="ui-breadcrumb" aria-label="当前位置">
-        <Link to={queueContext?.url ?? `/queue/${group}`}>
-          {TYPE_LABELS[w.type]}工单
+  if (
+    (w.type === "REVIEW" && w.status !== "PENDING_APPROVAL") ||
+    w.type === "QA"
+  )
+    return (
+      <header className="order-header ui-order-compact detail-compact-header">
+        <Link
+          to={queueContext?.url ?? `/queue/${group}`}
+          className="ui-order-back"
+          aria-label="返回队列"
+          title="返回队列"
+        >
+          <ArrowLeft size={16} />
         </Link>
-        <span aria-hidden="true">/</span>
-        <span aria-current="page">
+        <Tooltip content={m.legalName}>
+          <h1 tabIndex={0} className="ui-order-compact-name">
+            {m.legalName}
+          </h1>
+        </Tooltip>
+        <StatusBadge status={w.status} />
+        {w.priority === "HIGH" && (
+          <span className="priority-high">
+            <Badge tone="danger">高</Badge>
+          </span>
+        )}
+        <span className="ui-order-compact-id">
           <IdText value={w.id} />
         </span>
+        <span className="ui-order-compact-sla">
+          <Sla order={w} />
+        </span>
+        <Popover
+          label="工单信息"
+          closeButtonLabel="关闭工单信息"
+          placement="below"
+          width="min(400px, calc(100vw - 32px))"
+          content={
+            <dl className="ui-order-details ui-order-popover-details">
+              {fields.map((field) => (
+                <div key={field.key}>
+                  <dt>{field.label}</dt>
+                  <dd>{field.children}</dd>
+                </div>
+              ))}
+            </dl>
+          }
+        >
+          <Button
+            label="工单信息"
+            icon={<Info size={16} />}
+            isIconOnly
+            variant="ghost"
+          />
+        </Popover>
+        <div className="action-row ui-order-compact-actions">{actions}</div>
+      </header>
+    );
+  return (
+    <header className="order-header detail-order-header">
+      <nav className="ui-breadcrumb" aria-label="当前位置">
+        <Link to={queueContext?.url ?? `/queue/${group}`}>
+          <ArrowLeft size={14} aria-hidden="true" />
+          {group === "approval" ? "审批" : TYPE_LABELS[w.type]}工单
+        </Link>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page">{w.id}</span>
       </nav>
-      <div className="page-title-row">
-        <div className="row ui-order-title">
-          <h1>{m.legalName}</h1>
-          {m.displayName && <span className="secondary">{m.displayName}</span>}
-          <StatusBadge status={w.status} />
-          {w.priority === "HIGH" && <Badge tone="danger">高</Badge>}
-          {a.isKeyMerchant && <Badge>重点</Badge>}
-          {w.type === "CHANNEL" && <Badge>{STAGE_LABELS[w.stage]}</Badge>}
-          {w.assignee &&
-            !["CLOSED", "DONE", "CLOSED_NO_RESPONSE", "WITHDRAWN"].includes(
-              w.status,
-            ) && (
-              <span className="secondary processing-person">
-                {w.assignee.name}正在处理
-              </span>
-            )}
-        </div>
-        <div className="action-row">{actions}</div>
-      </div>
-      <dl className="ui-order-details">
-        {fields.map((f) => (
-          <div key={f.key}>
-            <dt>{f.label}</dt>
-            <dd>{f.children}</dd>
+      <Panel className="detail-hero">
+        <div className="detail-hero-top">
+          <div className="detail-identity">
+            <div className="detail-icon" aria-hidden="true">
+              <Building2 size={24} />
+            </div>
+            <div className="detail-identity-copy">
+              <div className="detail-kicker">
+                <span>
+                  {group === "approval" ? "审批" : TYPE_LABELS[w.type]}详情
+                </span>
+                <IdText value={w.id} />
+                {merchantTradingName(m.legalName, m.displayName) && (
+                  <span>{m.displayName}</span>
+                )}
+              </div>
+              <div className="detail-name-row">
+                <h1>{m.legalName}</h1>
+                <StatusBadge status={w.status} />
+                {w.priority === "HIGH" && <Badge tone="danger">高</Badge>}
+                {a.isKeyMerchant && <Badge>重点商户</Badge>}
+                {w.type === "CHANNEL" && <Badge>{STAGE_LABELS[w.stage]}</Badge>}
+              </div>
+            </div>
           </div>
-        ))}
-      </dl>
+          <div className="action-row detail-header-actions">
+            {actions}
+            <Popover
+              label="工单信息"
+              closeButtonLabel="关闭工单信息"
+              placement="below"
+              alignment="end"
+              width="min(400px, calc(100vw - 32px))"
+              content={
+                <dl className="ui-order-details ui-order-popover-details">
+                  {fields.map((field) => (
+                    <div key={field.key}>
+                      <dt>{field.label}</dt>
+                      <dd>{field.children}</dd>
+                    </div>
+                  ))}
+                </dl>
+              }
+            >
+              <Button
+                label="工单信息"
+                icon={<Info size={16} />}
+                variant="ghost"
+              />
+            </Popover>
+          </div>
+        </div>
+        <dl className="detail-meta-grid">
+          <div>
+            <dt>关联申请</dt>
+            <dd>
+              <Link to={`/applications/${a.id}`}>{a.id}</Link>
+            </dd>
+          </div>
+          <div>
+            <dt>
+              {w.type === "SUPPLEMENT"
+                ? "商户截止"
+                : w.type === "CHANNEL"
+                  ? "提交渠道"
+                  : "当前环节"}
+            </dt>
+            <dd>
+              {w.type === "SUPPLEMENT"
+                ? deadlineDate(w.dueAt, m.country)
+                : w.type === "CHANNEL"
+                  ? (channel?.channelName ?? "—")
+                  : (STAGE_LABELS[w.stage] ?? w.stage)}
+            </dd>
+          </div>
+          <div>
+            <dt>处理人</dt>
+            <dd>{w.assignee ? <PersonName user={w.assignee} /> : "待领取"}</dd>
+          </div>
+          <div>
+            <dt>SLA 剩余</dt>
+            <dd>
+              {["CLOSED", "DONE", "CLOSED_NO_RESPONSE", "WITHDRAWN"].includes(
+                w.status,
+              ) ? (
+                "已结束"
+              ) : (
+                <Sla order={w} />
+              )}
+            </dd>
+          </div>
+        </dl>
+      </Panel>
     </header>
   );
 }
@@ -826,14 +1105,20 @@ export function FileUpload({
   disabled,
   accept,
   maxCount,
+  language = "zh",
+  session: uploadSession,
 }: {
   value: UploadedFile[];
   onChange: (files: UploadedFile[]) => void;
   disabled?: boolean;
   accept?: string;
   maxCount?: number;
+  language?: CommunicationLanguage;
+  session?: Session;
 }) {
-  const { session } = useSession();
+  const { session: currentSession } = useSession();
+  const session = uploadSession ?? currentSession;
+  const english = language === "en";
   const [preview, setPreview] = useState<UploadedFile>();
   const [reading, setReading] = useState(false);
   const [error, setError] = useState("");
@@ -863,9 +1148,22 @@ export function FileUpload({
                   uploadedAt: new Date().toISOString(),
                   content: String(reader.result),
                 });
-              reader.onerror = () => reject(new Error(`无法读取 ${file.name}`));
+              reader.onerror = () =>
+                reject(
+                  new Error(
+                    english
+                      ? `Unable to read ${file.name}`
+                      : `无法读取 ${file.name}`,
+                  ),
+                );
               reader.onabort = () =>
-                reject(new Error(`读取 ${file.name} 已取消`));
+                reject(
+                  new Error(
+                    english
+                      ? `Reading ${file.name} was cancelled`
+                      : `读取 ${file.name} 已取消`,
+                  ),
+                );
               reader.readAsDataURL(file);
             }),
         ),
@@ -876,7 +1174,13 @@ export function FileUpload({
           : [...value, ...loaded],
       );
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "无法读取文件");
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : english
+            ? "Unable to read file"
+            : "无法读取文件",
+      );
     } finally {
       setReading(false);
     }
@@ -884,7 +1188,7 @@ export function FileUpload({
   return (
     <div className="file-upload">
       <FileInput
-        label="上传文件"
+        label={english ? "Upload files" : "上传文件"}
         isLabelHidden
         mode="dropzone"
         value={null}
@@ -893,7 +1197,11 @@ export function FileUpload({
         isLoading={reading}
         isMultiple={maxCount !== 1}
         accept={accept}
-        placeholder="拖拽文件到此处，或点击上传"
+        placeholder={
+          english
+            ? "Drop files here, or click to upload"
+            : "拖拽文件到此处，或点击上传"
+        }
         status={error ? { type: "error", message: error } : undefined}
         width="100%"
       />
@@ -911,8 +1219,8 @@ export function FileUpload({
               </div>
               <div className="ui-upload-actions">
                 <IconButton
-                  label={`预览 ${file.name}`}
-                  tooltip="预览"
+                  label={`${english ? "Preview" : "预览"} ${file.name}`}
+                  tooltip={english ? "Preview" : "预览"}
                   icon={<Eye size={16} />}
                   variant="ghost"
                   onClick={() => setPreview(file)}
@@ -921,15 +1229,15 @@ export function FileUpload({
                   className="ui-file-download"
                   href={file.content ?? file.url}
                   download={file.name}
-                  label={`下载 ${file.name}`}
-                  tooltip="下载"
+                  label={`${english ? "Download" : "下载"} ${file.name}`}
+                  tooltip={english ? "Download" : "下载"}
                 >
                   <Download size={16} aria-hidden="true" />
                 </AstryxLink>
                 {!disabled && (
                   <IconButton
-                    label={`移除 ${file.name}`}
-                    tooltip="移除"
+                    label={`${english ? "Remove" : "移除"} ${file.name}`}
+                    tooltip={english ? "Remove" : "移除"}
                     icon={<Trash2 size={16} />}
                     variant="ghost"
                     isDisabled={reading}
@@ -967,7 +1275,11 @@ export function FileUpload({
               className="document-preview"
             />
           ) : (
-            <p className="secondary">此文件格式不支持在线预览，请下载查看。</p>
+            <p className="secondary">
+              {english
+                ? "This file cannot be previewed online. Download it to view."
+                : "此文件格式不支持在线预览，请下载查看"}
+            </p>
           )}
         </div>
         <div className="ui-dialog-actions">
@@ -977,9 +1289,12 @@ export function FileUpload({
             download={preview?.name}
           >
             <Download size={16} aria-hidden="true" />
-            下载文件
+            {english ? "Download file" : "下载文件"}
           </AstryxLink>
-          <Button label="关闭" onClick={() => setPreview(undefined)} />
+          <Button
+            label={english ? "Close" : "关闭"}
+            onClick={() => setPreview(undefined)}
+          />
         </div>
       </Dialog>
     </div>

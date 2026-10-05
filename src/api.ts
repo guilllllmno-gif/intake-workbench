@@ -9,6 +9,7 @@ import type {
   CheckItem,
   Evidence,
   EvidenceSnapshot,
+  ExternalText,
   Merchant,
   MetricData,
   MutationAction,
@@ -21,6 +22,7 @@ import type {
   QueueRow,
   QueueView,
   Role,
+  SearchResult,
   Session,
   Status,
   Store,
@@ -36,6 +38,7 @@ import {
   COMPLIANCE_ROLES,
   MENUS,
   QUEUE_TABS,
+  orderPath,
 } from "./access";
 import {
   CHECK_OPTIONS,
@@ -57,7 +60,7 @@ export class ApiError extends Error {
     this.name = "ApiError";
   }
 }
-const KEY = "intake-workbench-v05";
+const KEY = "intake-workbench-v06";
 const DAY = 86400000;
 const HOUR = 3600000;
 const SYSTEM: UserRef = { id: "system", name: "自动调度" };
@@ -142,7 +145,10 @@ function duty(s: Store, w: WorkOrder, session: Session, second = false) {
   const a = application(s, w.applicationId);
   if (a.submittedBy?.id === session.userId)
     fail("代商户提交申请的人不能处理或审批该申请。", 403);
-  if (second && w.checkItems?.some((c) => c.decidedBy?.id === session.userId))
+  if (
+    second &&
+    orderChecks(s, w).some((c) => c.decidedBy?.id === session.userId)
+  )
     fail("不能复核自己的检查项结论。", 403);
 }
 function owner(w: WorkOrder, session: Session, allowed: Role[]) {
@@ -190,7 +196,7 @@ function rawStore(): Store {
     if (raw) {
       try {
         const saved = JSON.parse(raw);
-        if (saved.schema !== 5) fail("本地数据版本不兼容，请重置。", 500);
+        if (saved.schema !== 6) fail("本地数据版本不兼容，请重置。", 500);
         memory = saved;
       } catch (error) {
         if (error instanceof ApiError) throw error;
@@ -218,6 +224,18 @@ function resume(w: WorkOrder) {
   w.slaPaused = false;
   delete w.slaRemainingMs;
 }
+function qaSnapshot(s: Store, w: WorkOrder): EvidenceSnapshot {
+  const snap = s.snapshots[s.qa[w.id]?.snapshotId];
+  if (!snap) fail("抽检证据快照不存在。", 409);
+  return snap;
+}
+function orderChecks(s: Store, w: WorkOrder): CheckItem[] {
+  return w.type === "QA" ? qaSnapshot(s, w).checkItems : w.checkItems || [];
+}
+function orderEvidence(s: Store, w: WorkOrder): Evidence[] {
+  return w.type === "QA" ? qaSnapshot(s, w).evidence : s.evidence;
+}
+
 function snapshot(s: Store, w: WorkOrder): string {
   const id = uid(s, "SNAP");
   const ids = new Set((w.checkItems || []).flatMap((c) => c.evidenceIds));
@@ -225,8 +243,12 @@ function snapshot(s: Store, w: WorkOrder): string {
     id,
     at: now(),
     workOrderId: w.id,
-    checkItems: clone(w.checkItems || []),
-    evidence: clone(s.evidence.filter((e) => ids.has(e.id))),
+    checkItems: clone(orderChecks(s, w)),
+    evidence: clone(
+      w.type === "QA"
+        ? qaSnapshot(s, w).evidence
+        : s.evidence.filter((e) => ids.has(e.id)),
+    ),
   };
   return id;
 }
@@ -269,8 +291,8 @@ function notify(
   s: Store,
   userId: string,
   w: WorkOrder,
-  title = "工单已更新",
-  type: Notification["type"] = "UPDATE",
+  title: string,
+  type: Notification["type"],
 ) {
   s.notifications.push({
     id: uid(s, "NTF"),
@@ -373,7 +395,6 @@ function finish(s: Store, w: WorkOrder, outcome: string) {
     }
     changed(s, channel, SYSTEM, "合规判断完成", before);
   }
-  notify(s, a.salesOwner.id, w, "申请进度已更新");
 }
 function closeSupplementParents(
   s: Store,
@@ -413,14 +434,6 @@ function load(): Store {
     if (w) {
       const before = clone(w);
       delete w.mappingRequestedAt;
-      if (w.assignee)
-        notify(
-          s,
-          w.assignee.id,
-          w,
-          "渠道原因映射已完成，请继续处理",
-          "MAPPING",
-        );
       changed(s, w, SYSTEM, "应用渠道原因映射", before);
     }
   }
@@ -458,39 +471,45 @@ function load(): Store {
       touched = true;
     }
   }
+  const urgent = new Map<string, number>();
   for (const w of s.orders) {
     if (
       !w.assignee ||
       w.slaPaused ||
-      CLOSED.includes(w.status) ||
       Date.parse(w.slaDueAt) - Date.now() > HOUR
     )
       continue;
     const u = USERS.find((candidate) => candidate.id === w.assignee?.id);
-    if (
-      !u ||
-      !u.roles.some((role) => actionable(s, w, { ...u, userId: u.id, role }))
-    )
-      continue;
-    if (
-      s.notifications.some(
-        (n) =>
-          n.userId === u.id &&
-          n.workOrderId === w.id &&
-          n.type === "SLA" &&
-          n.at >= w.enteredStatusAt,
-      )
-    )
-      continue;
-    notify(
-      s,
-      u.id,
-      w,
-      Date.parse(w.slaDueAt) <= Date.now()
-        ? "工单处理时限已超时，请尽快处理"
-        : "工单 SLA 即将超时，请及时处理",
-      "SLA",
+    if (u?.roles.some((role) => actionable(s, w, { ...u, userId: u.id, role })))
+      urgent.set(u.id, (urgent.get(u.id) || 0) + 1);
+  }
+  const obsolete = s.notifications.filter(
+    (n) => n.type === "SLA" && !urgent.has(n.userId),
+  );
+  if (obsolete.length) {
+    s.notifications = s.notifications.filter((n) => !obsolete.includes(n));
+    touched = true;
+  }
+  for (const [userId, count] of urgent) {
+    const existing = s.notifications.find(
+      (n) => n.userId === userId && n.type === "SLA",
     );
+    if (existing?.count === count) continue;
+    const title = `${count} 张待处理工单即将或已经超时，请及时处理`;
+    if (existing) {
+      Object.assign(existing, { count, title, at: now(), read: false });
+      delete existing.workOrderId;
+    } else {
+      s.notifications.push({
+        id: uid(s, "NTF"),
+        userId,
+        title,
+        count,
+        at: now(),
+        read: false,
+        type: "SLA",
+      });
+    }
     touched = true;
   }
   if (touched) persist(s);
@@ -505,6 +524,7 @@ const SAFE_APP = [
   "salesOwner",
   "createdAt",
   "version",
+  "communicationLanguage",
   "stageTimes",
 ];
 function projectApp(
@@ -705,7 +725,7 @@ function projectOrder(s: Store, w: WorkOrder, session: Session): WorkOrder {
   const blind = w.type === "QA" && ["QUEUED", "BLIND"].includes(w.status);
   if (!blind)
     Object.assign(r, pick(w, ["outcome", "pendingDecision", "complianceNote"]));
-  r.checkItems = (w.checkItems || []).flatMap((c) => {
+  r.checkItems = orderChecks(s, w).flatMap((c) => {
     if (
       session.role !== "COMPLIANCE_HEAD" &&
       c.evidenceIds.some((id) => restrictedEvidence(s, id))
@@ -743,6 +763,21 @@ function projectOrder(s: Store, w: WorkOrder, session: Session): WorkOrder {
     r.checkItems.forEach((c) => {
       c.status = "PENDING";
     });
+  if (blind) {
+    for (const key of [
+      "originalAssignee",
+      "submittedBy",
+      "approvalReasons",
+      "approvalActorIds",
+      "requiresDual",
+      "overrideAutoReject",
+      "lateHardReject",
+      "hardRejectDismissed",
+      "missingEvidence",
+      "hasNewEvidence",
+    ] as const)
+      delete r[key];
+  }
   r.reasonCodes = [...new Set(r.checkItems.flatMap((c) => c.reasonCodes))];
   if (session.role === "COMPLIANCE_HEAD")
     Object.assign(
@@ -878,6 +913,7 @@ function detail(
       "externalStatus",
       "createdAt",
       "version",
+      "communicationLanguage",
     ]);
     return result;
   }
@@ -885,9 +921,13 @@ function detail(
     .filter((p) => p.merchantId === m.id)
     .map((p) => projectPerson(p, session));
   if (canEvidence(session.role))
-    result.evidence = s.evidence
+    result.evidence = orderEvidence(s, w)
       .filter((e) =>
-        result.workOrder.checkItems?.some((c) => c.evidenceIds.includes(e.id)),
+        w.type === "QA"
+          ? session.role === "COMPLIANCE_HEAD" || !restrictedEvidence(s, e.id)
+          : result.workOrder.checkItems?.some((c) =>
+              c.evidenceIds.includes(e.id),
+            ),
       )
       .map((e) => projectEvidence(e, grant));
   if (session.role !== "APPROVER") result.audit = projectAudit(s, w, session);
@@ -914,12 +954,14 @@ function detail(
     result.qa = pick(
       s.qa[w.id],
       blind
-        ? ["id", "sampledAt", "batchId", "blindConclusions"]
+        ? ["id", "sampledAt", "batchId", "reviewMode", "blindConclusions"]
         : [
             "id",
             "sampledObjectId",
             "sampledAt",
             "batchId",
+            "snapshotId",
+            "reviewMode",
             "blindConclusions",
             "originalConclusions",
             "consistent",
@@ -928,6 +970,17 @@ function detail(
             "generatedIds",
           ],
     );
+  if (
+    result.qa?.originalConclusions &&
+    result.qa.reviewMode === "CHECK_ITEMS"
+  ) {
+    const visibleIds = new Set(result.workOrder.checkItems?.map((c) => c.id));
+    result.qa.originalConclusions = Object.fromEntries(
+      Object.entries(result.qa.originalConclusions).filter(([id]) =>
+        visibleIds.has(id),
+      ),
+    );
+  }
   if (canEvidence(session.role) && !blind)
     result.approvalDecisions = clone(
       s.approvalDecisions.filter((v) => v.workOrderId === w.id),
@@ -1128,7 +1181,7 @@ function queueRow(
     if (view !== "team") {
       r.contact = clone(m.contacts?.[0]);
       r.supplementCount = w.items?.length || 0;
-      r.supplementText = w.items?.map((i) => i.externalText).join("；");
+      r.supplementText = w.items?.map((i) => i.externalText.zh).join("；");
     }
     r.supplementSource = [...new Set(w.items?.map((i) => i.source) || [])].join(
       " / ",
@@ -1220,6 +1273,13 @@ function neutralText(text: unknown) {
   )
     fail("对外内容只能使用中性资料文案。");
 }
+function externalText(value: unknown): ExternalText {
+  if (!value || typeof value !== "object") fail("请填写中英文对外文案。");
+  const text = value as Partial<ExternalText>;
+  neutralText(text.zh);
+  neutralText(text.en);
+  return { zh: text.zh!.trim(), en: text.en!.trim() };
+}
 function files(value: unknown, actor?: UserRef): UploadedFile[] {
   if (!Array.isArray(value) || !value.length) fail("请上传书面材料。");
   return value.map((v) => {
@@ -1275,7 +1335,7 @@ function escalate(s: Store, w: WorkOrder, actor: UserRef, reason: string) {
   a.version++;
   audit(s, child, actor, "创建受限工单", null);
   for (const head of USERS.filter((u) => u.roles.includes("COMPLIANCE_HEAD")))
-    notify(s, head.id, child, "受限案件待领取");
+    notify(s, head.id, child, "受限案件待领取", "ASSIGNMENT");
 }
 function addSupplement(
   s: Store,
@@ -1310,10 +1370,10 @@ function addSupplement(
     sup.extensions = [];
     sup.contactLog = [];
     sup.remindersSent = 0;
-    sup.merchantToken = uid(s, "MT");
+    sup.merchantToken = crypto.randomUUID();
   }
   for (const input of payload.items) {
-    neutralText(input.externalText);
+    const text = externalText(input.externalText);
     if (!["UPLOAD", "REVERIFY", "CONFIRM_FIELD"].includes(input.actionType))
       fail("补件动作无效。");
     const check = input.checkItemId
@@ -1346,7 +1406,7 @@ function addSupplement(
       source: w.type === "CHANNEL" ? "CHANNEL" : "COMPLIANCE",
       ...(code ? { reasonCode: code } : {}),
       ...(check ? { checkItemId: check.id } : {}),
-      externalText: input.externalText.trim(),
+      externalText: text,
       actionType: input.actionType,
       status: "PENDING",
       ...(input.field ? { field: input.field } : {}),
@@ -1511,7 +1571,7 @@ function completeSupplement(s: Store, w: WorkOrder) {
         )
       ) {
         const restored = makeOrder(s, a, "REVIEW", p.id);
-        restored.checkItems = clone(p.checkItems || []).map((c) => ({
+        restored.checkItems = clone(orderChecks(s, p)).map((c) => ({
           id: uid(s, "CI"),
           checkType: c.checkType,
           title: c.title,
@@ -1682,7 +1742,7 @@ function actionable(s: Store, w: WorkOrder, session: Session) {
   if (w.type === "QA")
     return (
       isSenior(session.role) &&
-      !w.checkItems?.some((c) => c.decidedBy?.id === session.userId) &&
+      !orderChecks(s, w).some((c) => c.decidedBy?.id === session.userId) &&
       ["QUEUED", "BLIND", "COMPARE"].includes(w.status)
     );
   if (w.status === "PENDING_APPROVAL") {
@@ -1740,48 +1800,34 @@ function claimOrder(s: Store, w: WorkOrder, session: Session) {
   }
 }
 
-function noticeItem(item: SupplementItem, language: "zh" | "en") {
-  if (language === "zh") return item.externalText;
-  if (!/[\u3400-\u9fff]/.test(item.externalText)) return item.externalText;
-  if (item.actionType === "REVERIFY")
-    return "Complete identity verification again for the person indicated in the secure portal.";
-  const text = `${item.field || ""} ${item.externalText}`;
-  if (/董事名册|签字授权/.test(text))
-    return "Upload the current register of directors and signatory authorization, listing every director and authorized signatory.";
-  if (/股权结构图|各层股东/.test(text))
-    return "Upload a signed ownership chart and shareholder registers for every ownership layer, identifying the ultimate individual beneficial owners and their ownership percentages.";
-  if (/退款政策/.test(text))
-    return "Provide the updated website refund policy and customer-service contact details, with publicly accessible page links or screenshots.";
-  if (/收入占比|订单样本/.test(text))
-    return "Provide a description of your main business, a representative product or service catalogue, and recent order samples indicating the revenue breakdown.";
-  if (/登记摘录/.test(text))
-    return "Upload a recent company register extract issued by the registration authority, showing the company's current registration status and directors.";
-  if (/近三个月/.test(text) && /地址/.test(text))
-    return "Upload proof of registered address issued within the last three months, showing the full company name, address and issue date.";
-  if (/证件/.test(text) && /四角/.test(text))
-    return "Upload a clear original colour image of the director's valid identity document, showing all four corners and its expiry date.";
-  if (item.actionType === "CONFIRM_FIELD") {
-    if (/继续申请/.test(text))
-      return "Confirm that you wish to continue your application and verify your current business information.";
-    if (/地址/.test(text))
-      return "Confirm or correct your registered business address.";
-    if (/名称|姓名/.test(text))
-      return "Confirm or correct the registered legal name.";
-    return "Review and confirm the business information indicated in the secure portal.";
-  }
-  if (/地址|住址/.test(text))
-    return "Upload a current proof of address showing the full name and address.";
-  if (/证件|护照|身份证|董事/.test(text))
-    return "Upload a clear, valid identity document for the indicated person.";
-  if (/股权|股东|受益|UBO/i.test(text))
-    return "Upload current ownership documents identifying the ultimate beneficial owners.";
-  if (/注册|登记|营业执照/.test(text))
-    return "Upload a current company registration certificate showing the legal name and registration number.";
-  if (/账户|银行|收款/.test(text))
-    return "Upload a bank account document showing the account holder and account details.";
-  if (/网站|经营|业务|商品/.test(text))
-    return "Upload documents describing your business activities, products and website.";
-  return "Upload the supporting document requested for this item in the secure portal, with all pages clear and complete.";
+function actionableNotification(
+  s: Store,
+  n: Notification,
+  session: Session,
+): boolean {
+  if (n.userId !== session.userId) return false;
+  if (n.type === "SLA")
+    return s.orders.some(
+      (w) =>
+        w.assignee?.id === session.userId &&
+        !w.slaPaused &&
+        Date.parse(w.slaDueAt) - Date.now() <= HOUR &&
+        actionable(s, w, session),
+    );
+  const w = s.orders.find((w) => w.id === n.workOrderId);
+  if (!w || !readable(w, session)) return false;
+  if (n.type === "EXTENSION")
+    return (
+      session.role === "OPS_LEAD" &&
+      w.status === "WAITING_MERCHANT" &&
+      !!w.extensions?.some(
+        (extension) =>
+          extension.status === "PENDING" &&
+          extension.requestedBy.id !== session.userId &&
+          (!extension.assignedTo || extension.assignedTo.id === session.userId),
+      )
+    );
+  return actionable(s, w, session);
 }
 
 function noticePreview(
@@ -1795,29 +1841,26 @@ function noticePreview(
   duty(s, w, session);
   if (!["EMAIL", "SMS", "PORTAL"].includes(payload.channel))
     fail("通知渠道无效。");
-  const m = merchant(s, application(s, w.applicationId));
-  const contact = m.contacts?.[0];
+  const a = application(s, w.applicationId);
+  const m = merchant(s, a);
+  const primaryContact = m.contacts?.[0];
   const recipient =
     payload.recipient ||
-    (payload.channel === "SMS" ? contact?.phone : contact?.email) ||
+    (payload.channel === "SMS"
+      ? primaryContact?.phone
+      : primaryContact?.email) ||
     "";
-  if (
-    !m.contacts?.some((c) =>
-      payload.channel === "EMAIL"
-        ? c.email === recipient
-        : payload.channel === "SMS"
-          ? c.phone === recipient
-          : [c.email, c.phone, c.name, w.merchantToken].includes(recipient),
-    )
-  )
-    fail("只能发送给本商户已登记的联系人。");
+  const contact = m.contacts?.find((c) =>
+    payload.channel === "EMAIL"
+      ? c.email === recipient
+      : payload.channel === "SMS"
+        ? c.phone === recipient
+        : [c.email, c.phone, c.name].includes(recipient),
+  );
+  if (!contact) fail("只能发送给本商户已登记的联系人。");
   const items = (w.items || []).filter((i) => i.status === "PENDING");
   if (!items.length) fail("没有待发送的补件项。", 409);
-  const language =
-    m.language ||
-    (["CN", "HK", "TW", "中国", "中国香港", "中国台湾"].includes(m.country)
-      ? "zh"
-      : "en");
+  const language = a.communicationLanguage ?? "en";
   const dueAt =
     w.sentAt && w.dueAt
       ? w.dueAt
@@ -1825,9 +1868,9 @@ function noticePreview(
   required(w.merchantToken, "商户安全链接");
   const link = `https://merchant.futurepay.example/supplements/${encodeURIComponent(w.merchantToken)}`;
   const salutation =
-    language === "zh" ? `尊敬的 ${m.legalName}：` : `Dear ${m.legalName},`;
+    language === "zh" ? `尊敬的 ${contact.name}：` : `Dear ${contact.name},`;
   const lines = items.map((item, i) => {
-    const text = noticeItem(item, language);
+    const text = item.externalText[language];
     neutralText(text);
     return `${i + 1}. ${text}`;
   });
@@ -2284,6 +2327,49 @@ export const api = {
         return row;
       });
   },
+  async search(query: string, session: Session): Promise<SearchResult[]> {
+    internal(session);
+    const term = query.trim().toLocaleLowerCase();
+    if (!term) return [];
+    const s = load();
+    const matches = (id: string, m: Merchant) =>
+      [id, m.legalName, m.displayName].some((value) =>
+        value?.toLocaleLowerCase().includes(term),
+      );
+    const results: SearchResult[] = [];
+    for (const w of s.orders) {
+      if (!readable(w, session)) continue;
+      const m = merchant(s, application(s, w.applicationId));
+      if (!matches(w.id, m)) continue;
+      const projected = projectOrder(s, w, session);
+      results.push({
+        id: w.id,
+        kind: "order",
+        path: orderPath(projected),
+        label: m.legalName,
+        status: projected.status,
+      });
+    }
+    for (const a of s.applications) {
+      const m = merchant(s, a);
+      if (!matches(a.id, m)) continue;
+      results.push({
+        id: a.id,
+        kind: "application",
+        path: `/applications/${a.id}`,
+        label: m.legalName,
+        status: projectApp(s, a, session).status,
+      });
+    }
+    return results
+      .sort(
+        (a, b) =>
+          Number(b.id.toLocaleLowerCase() === term) -
+            Number(a.id.toLocaleLowerCase() === term) ||
+          a.id.localeCompare(b.id),
+      )
+      .slice(0, 20);
+  },
   async evidence(id: string, session: Session): Promise<Evidence> {
     internal(session);
     if (!canEvidence(session.role)) fail("无权查看风险证据。", 403);
@@ -2300,6 +2386,15 @@ export const api = {
     const s = load(),
       snap = s.snapshots[id];
     if (!snap) fail("快照不存在。", 404);
+    if (
+      s.orders.some(
+        (candidate) =>
+          candidate.type === "QA" &&
+          s.qa[candidate.id]?.snapshotId === id &&
+          ["QUEUED", "BLIND"].includes(candidate.status),
+      )
+    )
+      fail("盲审阶段不能查看原决策快照。", 403);
     const w = order(s, snap.workOrderId);
     authRead(w, session);
     if (w.type === "QA" && ["QUEUED", "BLIND"].includes(w.status))
@@ -2318,14 +2413,31 @@ export const api = {
     internal(session);
     const s = load();
     return s.notifications
-      .filter(
-        (n) =>
-          n.userId === session.userId &&
-          s.orders.some((w) => w.id === n.workOrderId && readable(w, session)),
-      )
-      .map((n) =>
-        pick(n, ["id", "userId", "workOrderId", "title", "type", "at", "read"]),
-      )
+      .filter((n) => actionableNotification(s, n, session))
+      .map((n) => {
+        const result = pick(n, [
+          "id",
+          "userId",
+          "workOrderId",
+          "title",
+          "type",
+          "at",
+          "read",
+          "count",
+        ]);
+        if (n.type === "SLA") {
+          result.count = s.orders.filter(
+            (w) =>
+              w.assignee?.id === session.userId &&
+              !w.slaPaused &&
+              Date.parse(w.slaDueAt) - Date.now() <= HOUR &&
+              actionable(s, w, session),
+          ).length;
+          result.title = `${result.count} 张待处理工单即将或已经超时，请及时处理`;
+          delete result.workOrderId;
+        }
+        return result;
+      })
       .sort((a, b) => b.at.localeCompare(a.at));
   },
   async markNotificationsRead(
@@ -2344,7 +2456,7 @@ export const api = {
       if (
         n.userId === session.userId &&
         (!selected || selected.has(n.id)) &&
-        s.orders.some((w) => w.id === n.workOrderId && readable(w, session))
+        actionableNotification(s, n, session)
       )
         n.read = true;
     persist(s);
@@ -2901,36 +3013,45 @@ export const api = {
         if (!q) fail("抽检记录不存在。", 409);
         if (w.status === "BLIND") {
           const answers = payload.blindConclusions;
-          if (!answers || typeof answers !== "object") fail("请提交独立结论。");
-          const keys = w.checkItems?.length
-            ? w.checkItems.map((c) => c.id)
-            : ["overall"];
-          for (const key of keys) {
-            const c = w.checkItems?.find((c) => c.id === key);
+          if (!answers || typeof answers !== "object" || Array.isArray(answers))
+            fail("请提交独立结论。");
+          const checks = orderChecks(s, w);
+          let keys: string[];
+          if (q.reviewMode === "APPLICATION") {
+            keys = ["overall"];
             if (
-              c
-                ? !CHECK_OPTIONS[c.checkType].some(
-                    (o) => o.value === answers[key],
-                  )
-                : !["APPROVED", "DECLINED", "MANUAL_REVIEW"].includes(
-                    answers[key],
-                  )
-            )
-              fail("请完成每个抽检项的独立结论。");
-          }
-          q.blindConclusions = Object.fromEntries(
-            keys.map((k) => [k, answers[k]]),
-          );
-          q.originalConclusions ||= w.checkItems?.length
-            ? Object.fromEntries(
-                w.checkItems.map((c) => [
-                  c.id,
-                  c.conclusion || "MANUAL_REVIEW",
-                ]),
+              Object.keys(answers).length !== 1 ||
+              !Object.hasOwn(answers, "overall") ||
+              !["APPROVED", "DECLINED", "MANUAL_REVIEW"].includes(
+                answers.overall,
               )
-            : { overall: a.autoDecision || a.decision || "MANUAL_REVIEW" };
+            )
+              fail("请选择整单独立结论。");
+          } else if (q.reviewMode === "CHECK_ITEMS") {
+            if (!checks.length) fail("抽检样本缺少检查项。", 409);
+            keys = checks.map((c) => c.id);
+            if (Object.keys(answers).length !== keys.length)
+              fail("请提交全部抽检项的独立结论。");
+            for (const c of checks) {
+              if (
+                !Object.hasOwn(answers, c.id) ||
+                !CHECK_OPTIONS[c.checkType].some(
+                  (option) => option.value === answers[c.id],
+                )
+              )
+                fail("请完成每个抽检项的独立结论。");
+            }
+          } else fail("抽检判断模式无效。", 409);
+          if (
+            !q.originalConclusions ||
+            keys.some((key) => !Object.hasOwn(q.originalConclusions!, key))
+          )
+            fail("抽样时的原始结论不存在。", 409);
+          q.blindConclusions = Object.fromEntries(
+            keys.map((key) => [key, answers[key]]),
+          );
           q.consistent = keys.every(
-            (k) => q.blindConclusions![k] === q.originalConclusions![k],
+            (key) => q.blindConclusions![key] === q.originalConclusions![key],
           );
           transition(w, "COMPARE");
         } else {
@@ -2958,7 +3079,7 @@ export const api = {
             for (const correction of q.correctiveActions) {
               if (correction === "REOPEN_REVIEW") {
                 const review = makeOrder(s, a, "REVIEW", w.id);
-                review.checkItems = clone(w.checkItems || []).map((c) => ({
+                review.checkItems = clone(orderChecks(s, w)).map((c) => ({
                   id: uid(s, "CI"),
                   checkType: c.checkType,
                   title: c.title,
@@ -2998,13 +3119,16 @@ export const api = {
                     task = makeOrder(s, a, "SUPPLEMENT", w.id);
                     task.assignee = ref(USERS.find((u) => u.id === "u_2051")!);
                     task.items = [];
-                    task.merchantToken = uid(s, "MT");
+                    task.merchantToken = crypto.randomUUID();
                   }
                   (task.items ||= []).push({
                     id: uid(s, "SI"),
                     sourceWorkOrderId: w.id,
                     source: "COMPLIANCE",
-                    externalText: "请确认是否继续申请，并确认当前经营信息。",
+                    externalText: {
+                      zh: "请确认是否继续申请，并确认当前经营信息。",
+                      en: "Confirm that you wish to continue your application and verify your current business information.",
+                    },
                     actionType: "CONFIRM_FIELD",
                     field: "继续申请",
                     status: task.status === "TO_CHECK" ? "MISSING" : "PENDING",
@@ -3038,7 +3162,7 @@ export const api = {
         if (
           !body.includes(preview.link) ||
           unsent.some(
-            (item) => !body.includes(noticeItem(item, preview.language)),
+            (item) => !body.includes(item.externalText[preview.language]),
           )
         )
           fail("不可删改补件要求或安全提交链接，仅可补充模板措辞。");
@@ -3048,11 +3172,6 @@ export const api = {
           sender = payload.sender ?? preview.sender;
         neutralText(subject);
         if (sender !== preview.sender) fail("通知必须使用系统发件人。");
-        if (
-          preview.language === "en" &&
-          /[\u3400-\u9fff]/.test(`${body} ${subject}`)
-        )
-          fail("该商户应使用英文通知。");
         for (const item of unsent) item.status = "SENT";
         if (!w.sentAt) {
           w.sentAt = now();
@@ -3187,14 +3306,6 @@ export const api = {
         e.approvedBy = actor;
         e.approvedAt = now();
         if (payload.approved) w.dueAt = e.requestedDueAt;
-        if (w.assignee)
-          notify(
-            s,
-            w.assignee.id,
-            w,
-            payload.approved ? "延期申请已批准" : "延期申请未通过",
-            "EXTENSION",
-          );
         break;
       }
       case "merchant-submit": {
@@ -3278,7 +3389,7 @@ export const api = {
           id: uid(s, "CONTACT"),
           at: now(),
           channel: "PORTAL",
-          summary: `退回补正：${rejected.map((i) => `${i.externalText}（${i.rejectReason}）`).join("；")}`,
+          summary: `退回补正：${rejected.map((i) => `${i.externalText.zh}（${i.rejectReason}）`).join("；")}`,
           by: actor,
         });
         break;
@@ -3297,7 +3408,10 @@ export const api = {
           id: uid(s, "SI"),
           sourceWorkOrderId: w.id,
           source: "COMPLIANCE",
-          externalText: "商户书面撤回确认",
+          externalText: {
+            zh: "商户书面撤回确认",
+            en: "Written confirmation of application withdrawal",
+          },
           actionType: "UPLOAD",
           status: "PROVIDED",
           files: evidence,
@@ -3351,14 +3465,6 @@ export const api = {
           createdBy: actor,
         });
         delete w.mappingRequestedAt;
-        if (w.assignee)
-          notify(
-            s,
-            w.assignee.id,
-            w,
-            "渠道原因映射已完成，请继续处理",
-            "MAPPING",
-          );
         break;
       }
       case "mapping-request": {
@@ -3367,10 +3473,6 @@ export const api = {
           fail("仅未映射的驳回回执可通知组长映射。", 409);
         if (w.mappingRequestedAt) fail("已通知组长，请等待映射。", 409);
         w.mappingRequestedAt = now();
-        for (const lead of USERS.filter((candidate) =>
-          candidate.roles.includes("OPS_LEAD"),
-        ))
-          notify(s, lead.id, w, "渠道驳回原因待映射", "MAPPING");
         break;
       }
       case "channel-supplement": {
@@ -3484,6 +3586,7 @@ export const api = {
         review.priority = "NORMAL";
         const e: Evidence = {
           id: uid(s, "EV"),
+          applicationId: a.id,
           kind: "MANUAL_VERIFY",
           sourceRef: c.id,
           generatedAt: now(),
@@ -3590,18 +3693,23 @@ export const api = {
       case "persona": {
         const c =
           action === "read-evidence"
-            ? w.checkItems?.find((c) => c.id === payload.itemId)
-            : w.checkItems?.find((c) =>
+            ? orderChecks(s, w).find((c) => c.id === payload.itemId)
+            : orderChecks(s, w).find((c) =>
                 c.evidenceIds.includes(payload.evidenceId),
               );
-        if (!c) fail("证据不属于本工单。", 404);
+        const e =
+          action === "read-evidence"
+            ? undefined
+            : orderEvidence(s, w).find((e) => e.id === payload.evidenceId);
+        if (!c && !(w.type === "QA" && e)) fail("证据不属于本工单。", 404);
         if (
-          c.evidenceIds.some((e) => restrictedEvidence(s, e)) &&
+          (c ? c.evidenceIds : [e!.id]).some((id) =>
+            restrictedEvidence(s, id),
+          ) &&
           session.role !== "COMPLIANCE_HEAD"
         )
           fail("无权查看此证据。", 403);
         if (action === "media") {
-          const e = s.evidence.find((e) => e.id === payload.evidenceId);
           if (!e?.mediaRefs.some((m) => m.id === payload.mediaId))
             fail("影像不存在。", 404);
           grant = { evidenceId: e.id, mediaId: payload.mediaId };

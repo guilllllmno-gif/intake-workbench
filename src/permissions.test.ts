@@ -35,6 +35,7 @@ const compliance: Role[] = [
 const operations: Role[] = ["OPS_AGENT", "OPS_LEAD"];
 const internal: Role[] = [...operations, ...compliance, "APPROVER", "SALES"];
 const id = (number: number) => `WO-20261005-${String(number).padStart(4, "0")}`;
+const s1Conclusions = { overall: "APPROVED" };
 const upload: UploadedFile = {
   id: "permission-proof",
   name: "Signed_confirmation.pdf",
@@ -100,7 +101,10 @@ async function openSupplement(actor = ops) {
         {
           checkItemId: check.id,
           reasonCode: "KYB-REG-ADDR",
-          externalText: "请补充有效地址证明。",
+          externalText: {
+            zh: "请补充有效地址证明。",
+            en: "Provide valid proof of address.",
+          },
           actionType: "UPLOAD",
         },
       ],
@@ -231,7 +235,10 @@ const mutations: MutationCell[] = [
             {
               checkItemId: check.id,
               reasonCode: check.reasonCodes[0],
-              externalText: "请提供有效地址证明。",
+              externalText: {
+                zh: "请提供有效地址证明。",
+                en: "Provide valid proof of address.",
+              },
               actionType: "UPLOAD",
             },
           ],
@@ -570,7 +577,7 @@ const mutations: MutationCell[] = [
       const detail = await take(id(1), actor);
       return {
         detail,
-        payload: { blindConclusions: { overall: "APPROVED" } },
+        payload: { blindConclusions: s1Conclusions },
         verify: (result) => {
           assert.equal(result.workOrder.status, "COMPARE");
           assert.equal(result.qa?.consistent, true);
@@ -639,7 +646,15 @@ const mutations: MutationCell[] = [
     prepare: async (actor) => ({
       detail: await mappedChannel(actor),
       payload: {
-        items: [{ externalText: "请提供银行账户证明。", actionType: "UPLOAD" }],
+        items: [
+          {
+            externalText: {
+              zh: "请提供银行账户证明。",
+              en: "Provide proof of your bank account.",
+            },
+            actionType: "UPLOAD",
+          },
+        ],
       },
       verify: (result) =>
         assert.equal(result.workOrder.status, "WAITING_SUPPLEMENT"),
@@ -1132,4 +1147,53 @@ test("all returned personnel references resolve to the canonical named user, inc
     review.audit?.at(-1)?.actor.name,
     USERS.find((user) => user.id === reviewer.userId)!.name,
   );
+});
+
+test("live search enforces order visibility and exposes only projected application status", async () => {
+  const restrictedDetail = await restricted();
+  assert.deepEqual(await api.search(restrictedDetail.workOrder.id, ops), []);
+  assert.deepEqual(await api.search(restrictedDetail.workOrder.id, senior), []);
+  const permitted = await api.search(restrictedDetail.workOrder.id, head);
+  assert.deepEqual(
+    permitted.map((result) => result.id),
+    [restrictedDetail.workOrder.id],
+  );
+  assert.equal(
+    permitted[0].path,
+    `/restricted/${restrictedDetail.workOrder.id}`,
+  );
+  assert.deepEqual(await api.search(id(3), ops), []);
+  assert.deepEqual(
+    (await api.search(id(3).toLowerCase(), reviewer)).map(
+      (result) => result.id,
+    ),
+    [id(3)],
+  );
+  const application = await api.getApplication(
+    restrictedDetail.application.id,
+    ops,
+  );
+  const progress = await api.search(application.application.id, ops);
+  assert.equal(progress[0].status, application.application.externalStatus);
+  assertKeysAbsent(progress, [
+    "restrictedReason",
+    "restrictedType",
+    "reasonCodes",
+    "evidence",
+    "merchantToken",
+  ]);
+  const salesResults = await api.search(
+    restrictedDetail.merchant.legalName,
+    identity("u_4001"),
+  );
+  assert.ok(
+    salesResults.some(
+      (result) => result.id === restrictedDetail.application.id,
+    ),
+  );
+  assert.ok(salesResults.every((result) => result.kind === "application"));
+  await denied(
+    api.search(restrictedDetail.merchant.legalName, identity("u_5001")),
+  );
+  assert.deepEqual(await api.search("   ", reviewer), []);
 });

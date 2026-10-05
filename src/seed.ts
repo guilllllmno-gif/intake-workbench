@@ -1,5 +1,6 @@
 import { USERS } from "./access";
 import { REASONS, reasonName } from "./catalog";
+import evidenceAssets from "./seed-evidence.json";
 import type {
   Application,
   CheckItem,
@@ -17,20 +18,6 @@ import type {
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 const RULE_VERSION = "triage-v1.0.3";
-const xml = (value: unknown) =>
-  String(value).replace(
-    /[&<>"']/g,
-    (character) =>
-      ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&apos;",
-      })[character]!,
-  );
-const svgUrl = (svg: string) =>
-  `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 
 interface Profile {
   displayName: string;
@@ -340,7 +327,10 @@ const JURISDICTIONS: Record<
 
 export function createSeed(now = Date.now()): Store {
   const iso = (offsetMs: number) => new Date(now + offsetMs).toISOString();
-  const date = (offsetDays: number) => iso(offsetDays * DAY).slice(0, 10);
+  const date = (offsetDays: number) =>
+    new Date(Date.parse(evidenceAssets.capturedAt) + offsetDays * DAY)
+      .toISOString()
+      .slice(0, 10);
   const random = (key: string) => {
     let value = 2166136261;
     for (const character of key)
@@ -379,7 +369,7 @@ export function createSeed(now = Date.now()): Store {
     team: "自动核验",
   };
   const store: Store = {
-    schema: 5,
+    schema: 6,
     nextId: 10000,
     users: USERS.map((account) => ({ ...account, roles: [...account.roles] })),
     merchants: [],
@@ -404,6 +394,48 @@ export function createSeed(now = Date.now()): Store {
   const applicationIndex = new Map<string, Application>();
   const merchantIndex = new Map<string, Merchant>();
   const addressIndex = new Map<string, string>();
+  const germanOffices = [
+    {
+      court: "Amtsgericht Hamburg",
+      address: "Am Kaiserkai 18, 20457 Hamburg, Deutschland",
+    },
+    {
+      court: "Amtsgericht München",
+      address: "Rosenheimer Straße 27, 81667 München, Deutschland",
+    },
+    {
+      court: "Amtsgericht Frankfurt am Main",
+      address: "Mainzer Landstraße 46, 60325 Frankfurt am Main, Deutschland",
+    },
+    {
+      court: "Amtsgericht Köln",
+      address: "Hohenzollernring 22, 50672 Köln, Deutschland",
+    },
+    {
+      court: "Amtsgericht Charlottenburg",
+      address: "Kantstraße 84, 10627 Berlin, Deutschland",
+    },
+    {
+      court: "Amtsgericht Stuttgart",
+      address: "Königstraße 28, 70173 Stuttgart, Deutschland",
+    },
+  ];
+  const registrationNumber = (country: string, key: string) => {
+    const digits = (label: string, count: number) =>
+      String(
+        jitter(`${key}:${label}`, 9 * 10 ** (count - 1)) + 10 ** (count - 1),
+      );
+    if (country === "GB") return digits("company", 8);
+    if (country === "SG")
+      return `${2004 + jitter(`${key}:year`, 20)}${digits("uen", 5)}${"ABCDEFGHJKLMNPQRSTUVWXYZ"[jitter(`${key}:suffix`, 23)]}`;
+    if (country === "HK") return digits("company", 7);
+    const office = germanOffices[jitter(`${key}:court`, germanOffices.length)];
+    return `${office.court} HRB ${digits("hrb", 6)}`;
+  };
+  const incorporationDate = (country: string, registrationNo: string) =>
+    country === "SG"
+      ? `${registrationNo.slice(0, 4)}-${String(1 + jitter(`${registrationNo}:month`, 12)).padStart(2, "0")}-${String(1 + jitter(`${registrationNo}:day`, 28)).padStart(2, "0")}`
+      : date(-1500 - jitter(`${registrationNo}:incorporation`, 4000));
   const orderId = (number: number) =>
     `WO-20261005-${String(number).padStart(4, "0")}`;
   const merchantFor = (appId: string) =>
@@ -414,21 +446,19 @@ export function createSeed(now = Date.now()): Store {
   function file(
     merchant: Merchant,
     name: string,
-    title: string,
-    rows: [string, unknown][],
-    options: { blur?: boolean; portrait?: boolean; uploadedAt?: string } = {},
+    options: { uploadedAt?: string } = {},
   ): UploadedFile {
     const id = `file_${String(++fileSequence).padStart(8, "0")}`;
-    const portrait = options.portrait
-      ? `<g transform="translate(740 168)"><rect width="180" height="210" rx="8" fill="#dceaf0"/><path d="M22 210Q28 146 88 146Q154 146 161 210" fill="#26354c"/><ellipse cx="91" cy="92" rx="48" ry="61" fill="#dcb397"/><path d="M42 91Q28 20 91 25Q159 21 139 96L129 58Q88 83 47 57Z" fill="#302820"/><path d="M62 92h17m23 0h17" stroke="#302820" stroke-width="4"/><path d="M89 99l-5 23h13M75 135q17 10 32-1" fill="none" stroke="#9b6450" stroke-width="3"/></g>`
-      : "";
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="720" viewBox="0 0 1000 720"><defs><filter id="soft"><feGaussianBlur stdDeviation="3.4"/></filter></defs><rect width="1000" height="720" fill="#fffdf7"/><path d="M46 50H954M46 667H954" stroke="#23352c" stroke-width="2"/><g${options.blur ? ' filter="url(#soft)"' : ""}><text x="48" y="91" font-size="25" fill="#16241c" font-family="Arial,sans-serif">${xml(title)}</text><text x="48" y="128" font-size="17" fill="#45584e" font-family="Arial,sans-serif">${xml(merchant.legalName)}</text>${portrait}${rows.map(([label, value], index) => `<text x="48" y="${179 + index * 46}" font-size="13" fill="#546057" font-family="Arial,sans-serif">${xml(label)}</text><text x="48" y="${200 + index * 46}" font-size="17" fill="#18251e" font-family="Arial,sans-serif">${xml(value)}</text>`).join("")}<text x="48" y="647" font-size="12" fill="#45584e" font-family="Arial,sans-serif">Record ${xml(id)} · Issued ${xml(date(-2))} · Page 1 of 1</text></g></svg>`;
+    // Scans and byte metadata are frozen together at evidenceAssets.capturedAt.
+    const asset = (
+      evidenceAssets.files as Record<string, { type: string; size: number }>
+    )[name];
     const person = peopleFor(merchant)[0];
     return {
       id,
       name,
-      type: "image/svg+xml",
-      size: new TextEncoder().encode(svg).length,
+      type: asset.type,
+      size: asset.size,
       pages: 1,
       uploadedBy: {
         id: person.id,
@@ -436,40 +466,16 @@ export function createSeed(now = Date.now()): Store {
         team: merchant.legalName,
       },
       uploadedAt: options.uploadedAt ?? iso(-2 * DAY),
-      url: svgUrl(svg),
+      url: `${import.meta.env?.BASE_URL ?? "/"}evidence/${encodeURIComponent(name)}`,
     };
   }
 
   function registryFile(merchant: Merchant): UploadedFile {
     const localName =
       merchant.country === "DE"
-        ? `Handelsregisterauszug_HRB${merchant.registrationNo.split(" ").at(-1)}.svg`
-        : `Company_Register_${merchant.registrationNo.replace(/\W/g, "")}.svg`;
-    return file(
-      merchant,
-      localName,
-      merchant.country === "DE"
-        ? "Handelsregister · Aktueller Auszug"
-        : "Company Registration Extract",
-      [
-        ["REGISTRATION AUTHORITY", merchant.registrationAuthority],
-        ["COMPANY NUMBER", merchant.registrationNo],
-        ["STATUS / DATE OF INCORPORATION", `Active / ${date(-1800)}`],
-        ["REGISTERED OFFICE", addressIndex.get(merchant.id)!],
-        [
-          "DIRECTORS",
-          peopleFor(merchant)
-            .filter((person) => person.role.includes("董事"))
-            .map((person) => person.name)
-            .join("; "),
-        ],
-        [
-          "BUSINESS ACTIVITY",
-          `MCC ${merchant.declaredMcc} · ${merchant.website}`,
-        ],
-      ],
-      { uploadedAt: iso(-2 * DAY) },
-    );
+        ? `Handelsregisterauszug_HRB${merchant.registrationNo.split(" ").at(-1)}.jpg`
+        : `Company_Register_${merchant.registrationNo.replace(/\W/g, "")}.jpg`;
+    return file(merchant, localName, { uploadedAt: iso(-2 * DAY) });
   }
 
   function addApplication(number: number, profile: Profile): Application {
@@ -480,7 +486,10 @@ export function createSeed(now = Date.now()): Store {
       displayName: profile.displayName,
       legalName: profile.legalName,
       registrationNo: profile.registrationNo,
-      registrationAuthority: jurisdiction.authority,
+      registrationAuthority:
+        profile.country === "DE"
+          ? profile.registrationNo.split(" HRB ")[0]
+          : jurisdiction.authority,
       country: profile.country,
       declaredMcc: profile.mcc,
       expectedMonthlyVolume: {
@@ -492,11 +501,7 @@ export function createSeed(now = Date.now()): Store {
         currency: jurisdiction.currency,
       },
       website: `https://${profile.domain}.example`,
-      businessModel: SCENARIO_PROFILES.some(
-        ([scenario]) => number === 88200 + scenario,
-      )
-        ? `中资创办企业。${profile.business}`
-        : profile.business,
+      businessModel: profile.business,
       mccRisk: profile.mcc === "4722" ? "高" : "低",
       countryRisk: "低",
       isNewEntity: false,
@@ -506,7 +511,9 @@ export function createSeed(now = Date.now()): Store {
       profile.country === "GB"
         ? `${22 + store.merchants.length} Harbour Street, ${jurisdiction.address}`
         : profile.country === "DE"
-          ? `Am Kaiserkai ${12 + store.merchants.length}, ${jurisdiction.address}`
+          ? germanOffices.find(
+              (office) => office.court === merchant.registrationAuthority,
+            )!.address
           : `${35 + store.merchants.length} ${jurisdiction.address}`,
     );
     store.merchants.push(merchant);
@@ -548,6 +555,8 @@ export function createSeed(now = Date.now()): Store {
     const application: Application = {
       id,
       merchantId: merchant.id,
+      communicationLanguage:
+        random(`correspondence:${number}`) < 0.4 ? "zh" : "en",
       stage: "MANUAL_REVIEW",
       status: "IN_PROGRESS",
       externalStatus: "审核中",
@@ -714,14 +723,20 @@ export function createSeed(now = Date.now()): Store {
       aliases: [merchant.displayName],
       country: merchant.country,
       registrationNo: merchant.registrationNo,
-      incorporatedAt: date(-1800),
+      incorporatedAt: incorporationDate(
+        merchant.country,
+        merchant.registrationNo,
+      ),
     };
     const registry = {
       registrationAuthority: merchant.registrationAuthority,
       legalName: merchant.legalName,
       registrationNo: merchant.registrationNo,
       status: "Active",
-      incorporatedAt: date(-1800),
+      incorporatedAt: incorporationDate(
+        merchant.country,
+        merchant.registrationNo,
+      ),
       registeredAddress: addressIndex.get(merchant.id),
       directors: people
         .filter((person) => person.role.includes("董事"))
@@ -769,7 +784,7 @@ export function createSeed(now = Date.now()): Store {
               registrationNo:
                 merchant.country === "HK" ? "200715894W" : "2871459",
               incorporatedAt: date(-4500),
-              listName: "Consolidated Screening List",
+              listName: "OFAC SDN List",
               listedAt: date(-120),
               strength: "MEDIUM",
               reason: "名称相似，注册标识与日期待核对",
@@ -819,43 +834,15 @@ export function createSeed(now = Date.now()): Store {
         const number = `K${String(Number(order.applicationId.slice(4)) * 91).padStart(7, "0")}`;
         const front = file(
           merchant,
-          `Passport_${holder.name.replace(/ /g, "_")}_photo.svg`,
-          `PASSPORT · ${merchant.country}`,
-          [
-            ["HOLDER", holder.name],
-            ["PASSPORT NUMBER", number],
-            ["NATIONALITY / DATE OF BIRTH", `${merchant.country} / 1984-06-18`],
-            ["DATE OF ISSUE / DATE OF EXPIRY", `${date(-730)} / ${expiry}`],
-            ["ISSUING AUTHORITY", `${merchant.country} Passport Authority`],
-          ],
-          { portrait: true },
+          `Passport_${holder.name.replace(/ /g, "_")}_photo.jpg`,
         );
         const back = file(
           merchant,
-          `Passport_${holder.name.replace(/ /g, "_")}_endorsements.svg`,
-          "PASSPORT · ENDORSEMENTS",
-          [
-            ["HOLDER", holder.name],
-            ["PASSPORT NUMBER", number],
-            ["DOCUMENT STATUS", "Valid"],
-            ["CAPTURED AT", iso(-2 * DAY)],
-            ["CAPTURE METHOD", "Mobile camera · rear lens · 1920 × 1440"],
-          ],
+          `Passport_${holder.name.replace(/ /g, "_")}_endorsements.jpg`,
         );
         const selfie = file(
           merchant,
-          `Identity_${holder.name.replace(/ /g, "_")}_live_frame.svg`,
-          "IDENTITY VERIFICATION · LIVE CAPTURE",
-          [
-            ["APPLICANT", holder.name],
-            ["CAPTURED AT", iso(-2 * DAY)],
-            [
-              "CAPTURE SESSION",
-              personaRef("inq", `capture:${order.applicationId}`),
-            ],
-            ["CAPTURE RESULT", "Face detected · liveness completed"],
-          ],
-          { portrait: true },
+          `Identity_${holder.name.replace(/ /g, "_")}_live_frame.jpg`,
         );
         fields = {
           document: {
@@ -871,6 +858,8 @@ export function createSeed(now = Date.now()): Store {
               name: "版面一致性",
               passed: false,
               reason: "出生日期区域字体基线与相邻字段不一致",
+              mediaId: `media_${suffix}_1`,
+              region: { x: 4.4, y: 38.2, width: 64, height: 7.2 },
             },
             { name: "人脸相似度", passed: true, reason: "相似度 96.4%" },
             { name: "活体检测", passed: true, reason: "动作序列完整" },
@@ -908,24 +897,7 @@ export function createSeed(now = Date.now()): Store {
       case "CLASSIFICATION": {
         const screenshot = file(
           merchant,
-          `Storefront_${merchant.registrationNo.replace(/\W/g, "")}.svg`,
-          "ONLINE STORE · PRODUCT CATALOGUE",
-          [
-            ["WEBSITE", merchant.website],
-            ["CATEGORY", merchant.businessModel],
-            [
-              "FEATURED PRODUCT",
-              merchant.declaredMcc === "4722"
-                ? "Seven-day guided itinerary · flights included"
-                : `Catalogue of ${merchant.legalName} · MCC ${merchant.declaredMcc}`,
-            ],
-            [
-              "PRICE",
-              `${merchant.expectedMonthlyVolume.currency} ${merchant.declaredMcc === "4722" ? "2,480" : "149"}`,
-            ],
-            ["CONTACT", merchant.contacts![0].email],
-            ["PAYMENT", "Card payment · cancellation terms available"],
-          ],
+          `Storefront_${merchant.registrationNo.replace(/\W/g, "")}.jpg`,
         );
         fields = {
           declaredMcc: merchant.declaredMcc,
@@ -946,16 +918,7 @@ export function createSeed(now = Date.now()): Store {
       case "WEBSITE": {
         const screenshot = file(
           merchant,
-          `Website_Contact_Terms_${merchant.id}.svg`,
-          "STORE INFORMATION · CONTACT AND TERMS",
-          [
-            ["WEBSITE", merchant.website],
-            ["PRODUCTS", merchant.businessModel],
-            ["CUSTOMER SERVICE", merchant.contacts![0].email],
-            ["RETURNS", "Contact customer service before returning goods"],
-            ["TERMS", "Delivery within 5–7 business days"],
-            ["REGISTERED BUSINESS", merchant.legalName],
-          ],
+          `Website_Contact_Terms_${merchant.id}.jpg`,
         );
         fields = {
           accessible: true,
@@ -1017,58 +980,59 @@ export function createSeed(now = Date.now()): Store {
             },
           ],
           documents: [
-            file(
-              merchant,
-              `Shareholding_Schedule_${merchant.id}.svg`,
-              "SHAREHOLDING SCHEDULE",
-              [
-                ["ENTITY", merchant.legalName],
-                [
-                  "REGISTERED CAPITAL",
-                  `${merchant.expectedMonthlyVolume.currency} 100,000`,
-                ],
-                [
-                  "CORPORATE SHAREHOLDER",
-                  `${merchant.legalName.split(" ")[0]} Holdings · 65%`,
-                ],
-                ["INDIVIDUAL SHAREHOLDER", `${people[1].name} · 35%`],
-                [
-                  "ULTIMATE BENEFICIARY DECLARATION",
-                  `${people[0].name} · effective interest 65%`,
-                ],
-                ["SIGNATORY", people[2].name],
-              ],
-            ),
+            file(merchant, `Shareholding_Schedule_${merchant.id}.jpg`),
           ],
         };
         break;
       case "LINKED_ENTITY": {
         const blacklist = reason === "INT-BLOCK-FUZZY";
         const recordNo = `${blacklist ? "INT-BL" : "INT-APP"}-${String(Number(order.id.slice(-4)) + 730100)}`;
+        const historicalRegistrationNo = registrationNumber(
+          merchant.country,
+          `historical:${merchant.id}`,
+        );
+        const bank = {
+          GB: "Barclays",
+          SG: "DBS",
+          HK: "HSBC",
+          DE: "Commerzbank",
+        }[merchant.country];
+        const account = `${bank} •••• ${1000 + jitter(`${merchant.id}:account`, 9000)}`;
         fields = {
           matchBasis: blacklist
-            ? `同一董事：${people[0].name}；登记编号不同，需确认关联关系。`
+            ? `同一董事：${people[0].name}；注册地址与收款账户一致，登记编号不同，需确认关联关系`
             : "法定名称相似，登记编号与董事信息不同，需排除重复申请。",
           subject: {
             ...subject,
             website: merchant.website,
             director: people[0].name,
+            address: addressIndex.get(merchant.id),
+            account,
           },
           matched: {
             id: `historic_${suffix}`,
             recordNo,
-            name: `${merchant.legalName.split(" ")[0]} Wholesale Limited`,
+            name: `${merchant.legalName.split(" ")[0]} Wholesale ${{ GB: "Ltd", SG: "Pte. Ltd.", HK: "Limited", DE: "GmbH" }[merchant.country]}`,
             country: merchant.country,
-            registrationNo: `HIST-${merchant.registrationNo.replace(/\W/g, "").slice(-8)}`,
+            registrationNo: historicalRegistrationNo,
             website: merchant.website.replace("https://", "https://wholesale."),
-            director: blacklist ? people[0].name : "历史主体董事已变更",
-            matchedFields: blacklist ? ["director"] : ["name"],
+            director: blacklist ? people[0].name : people[2].name,
+            address: blacklist
+              ? addressIndex.get(merchant.id)
+              : `48 ${JURISDICTIONS[merchant.country].address}`,
+            account: blacklist
+              ? account
+              : `${bank} •••• ${1000 + jitter(`${merchant.id}:historical-account`, 9000)}`,
+            matchedFields: blacklist ? ["director", "address", "account"] : [],
             status: "CLOSED",
             decision: blacklist ? "DECLINED" : "WITHDRAWN",
             history: blacklist
               ? "历史申请因商户资质不符合准入要求被拒绝；本次仅为关联待核实，不代表当前申请已作出决定。"
               : "历史申请由商户撤回，本次需确认是否为不同法律主体。",
-            incorporatedAt: date(-3200),
+            incorporatedAt: incorporationDate(
+              merchant.country,
+              historicalRegistrationNo,
+            ),
           },
         };
         break;
@@ -1090,6 +1054,7 @@ export function createSeed(now = Date.now()): Store {
     }
     const evidence: Evidence = {
       id: item.evidenceIds[0],
+      applicationId: order.applicationId,
       kind,
       sourceRef:
         kind === "LINKED_ENTITY"
@@ -1136,38 +1101,31 @@ export function createSeed(now = Date.now()): Store {
   ): WorkOrder {
     const order = addOrder(number, app, "SUPPLEMENT", status, ops);
     order.parentId = parent?.id;
-    order.merchantToken = `MT-${number}`;
+    order.merchantToken = crypto.randomUUID();
     order.extensions = [];
     order.contactLog = [];
     order.remindersSent = status === "WAITING_MERCHANT" ? 1 : 0;
     const reason = parent?.checkItems?.[0]?.reasonCodes[0] ?? "KYB-REG-ADDR";
-    const templates: Record<string, { text: string; note: string }> = {
+    const templates: Record<string, { note: string }> = {
       "KYB-REG-ADDR": {
-        text: "请提供近三个月的注册地址证明，须完整显示公司名称、地址及签发日期。",
         note: "核对地址证明的主体、完整地址及签发日期，不接受邮政信箱地址。",
       },
       "KYB-REG-NAME": {
-        text: "请提供最新公司注册证书，显示完整法定名称与公司注册编号。",
         note: "核对证书法定名称与申请表；如使用商业简称，请同时收集名称关联说明。",
       },
       "KYB-AP-UNDECLARED": {
-        text: "请提交最新董事名册及签字授权书，列明全部董事与授权签字人。",
         note: "收集完整董事名册、任职日期及授权范围，不向商户披露内部核验来源。",
       },
       "KYB-UBO-COMPLEX": {
-        text: "请提供签署的股权结构图及各层股东名册，直至列明最终自然人受益人及持股比例。",
         note: "核对每层持股总额、穿透路径和签章；不要仅收取最上层控股公司资料。",
       },
       "WEB-MISMATCH": {
-        text: "请提交已更新的网站退款政策页面与客户服务联系方式，提供公开可访问的页面链接或截图。",
         note: "核对退款条件、联系渠道及网站可访问性，材料应对应本申请的网站。",
       },
       "KYC-ID-TAMPER": {
-        text: "请重新提供董事本人有效身份证件的清晰彩色原图，完整显示四角及有效期。",
         note: "仅收集重新拍摄的证件，不披露内部影像校验结果；后续由合规核验。",
       },
       "SYS-REPORT-DELAYED": {
-        text: "请提供登记机关近期出具的企业登记摘录，显示主体存续状态及董事信息。",
         note: "核对官方摘录的签发机关、日期与查验信息，用于补齐登记证明。",
       },
     };
@@ -1184,8 +1142,10 @@ export function createSeed(now = Date.now()): Store {
               ? "COMPLIANCE"
               : "AUTO",
         checkItemId: parent?.checkItems?.[0]?.id,
-        reasonCode: parent?.checkItems?.[0]?.reasonCodes[0] ?? "DOC-UNUSABLE",
-        externalText: template.text,
+        reasonCode: reason,
+        externalText: {
+          ...REASONS[templates[reason] ? reason : "KYB-REG-ADDR"].externalText,
+        },
         actionType: reason === "KYC-ID-TAMPER" ? "REVERIFY" : "UPLOAD",
         targetPersonId:
           reason === "KYC-ID-TAMPER"
@@ -1219,16 +1179,7 @@ export function createSeed(now = Date.now()): Store {
       order.items[0].files = [
         file(
           merchant,
-          `Address_Statement_${merchant.registrationNo.replace(/\W/g, "")}.svg`,
-          "BUSINESS ACCOUNT · ADDRESS CONFIRMATION",
-          [
-            ["ACCOUNT HOLDER", merchant.legalName],
-            ["COMPANY NUMBER", merchant.registrationNo],
-            ["REGISTERED ADDRESS", addressIndex.get(merchant.id)!],
-            ["STATEMENT DATE", date(-12)],
-            ["ACCOUNT CURRENCY", merchant.expectedMonthlyVolume.currency],
-            ["ISSUED BY", "Harbour Commercial Services"],
-          ],
+          `Address_Statement_${merchant.registrationNo.replace(/\W/g, "")}.jpg`,
           { uploadedAt: iso(-40 * 60_000) },
         ),
       ];
@@ -1278,29 +1229,8 @@ export function createSeed(now = Date.now()): Store {
     const merchant = merchantFor(app.id);
     const director = peopleFor(merchant)[0];
     const certificate = registryFile(merchant);
-    const identity = file(
-      merchant,
-      `Director_Identity_${merchant.id}.svg`,
-      "DIRECTOR IDENTITY DOCUMENT",
-      [
-        ["HOLDER", director.name],
-        ["ISSUING COUNTRY", merchant.country],
-        ["DOCUMENT NUMBER", `P${String(number * 739 + 3817624)}`],
-        ["EXPIRY DATE", date(1460)],
-      ],
-      { portrait: true },
-    );
-    const address = file(
-      merchant,
-      `Address_Proof_${merchant.id}.svg`,
-      "BUSINESS ADDRESS STATEMENT",
-      [
-        ["ACCOUNT HOLDER", merchant.legalName],
-        ["REGISTERED ADDRESS", addressIndex.get(merchant.id)!],
-        ["STATEMENT DATE", date(-24)],
-        ["ISSUED BY", "Harbour Commercial Services"],
-      ],
-    );
+    const identity = file(merchant, `Director_Identity_${merchant.id}.jpg`);
+    const address = file(merchant, `Address_Proof_${merchant.id}.jpg`);
     store.submissions.push({
       id,
       applicationId: app.id,
@@ -1369,6 +1299,8 @@ export function createSeed(now = Date.now()): Store {
   store.qa[s1.id] = {
     id: `QA-${s1.id}`,
     sampledObjectId: s1.applicationId,
+    snapshotId: `SNAP-${s1.id}`,
+    reviewMode: "APPLICATION",
     batchId: "BATCH-DAILY-17",
     sampledAt: s1.createdAt,
     originalConclusions: { overall: "APPROVED" },
@@ -1388,7 +1320,7 @@ export function createSeed(now = Date.now()): Store {
     country: "HK",
     registrationNo: "2165834",
     incorporatedAt: date(-4100),
-    listName: "Regional Enforcement List",
+    listName: "UK Sanctions List",
     listedAt: date(-260),
     strength: "MEDIUM",
     reason: "名称相同但公司编号不同",
@@ -1436,7 +1368,7 @@ export function createSeed(now = Date.now()): Store {
     {
       ...s6Evidence.fields.subject,
       id: "hit_61a",
-      listName: "Consolidated Sanctions List",
+      listName: "OFAC SDN List",
       listedAt: date(-70),
       strength: "HIGH",
       reason: "名称、注册编号及成立日期一致",
@@ -1456,30 +1388,13 @@ export function createSeed(now = Date.now()): Store {
   s8Evidence.generatedAt = iso(-15 * 60_000);
   const s8Merchant = merchantFor(s8.applicationId);
   s8Evidence.fields.documents = [
-    file(
-      s8Merchant,
-      "Companies_House_Status_Update.svg",
-      "Companies House · Company Status Update",
-      [
-        ["REGISTRATION AUTHORITY", s8Merchant.registrationAuthority],
-        ["COMPANY NUMBER", s8Merchant.registrationNo],
-        ["STATUS / DISSOLUTION DATE", `Dissolved / ${date(-1)}`],
-        ["REGISTERED OFFICE", addressIndex.get(s8Merchant.id)!],
-        [
-          "DIRECTORS",
-          peopleFor(s8Merchant)
-            .filter((person) => person.role.includes("董事"))
-            .map((person) => person.name)
-            .join("; "),
-        ],
-      ],
-      { uploadedAt: s8Evidence.generatedAt },
-    ),
+    file(s8Merchant, "Companies_House_Status_Update.jpg", {
+      uploadedAt: s8Evidence.generatedAt,
+    }),
   ];
   s8.hasNewEvidence = true;
   s8.checkItems![0].hasNewEvidence = true;
   const s9 = supplement(9, scenarioApp(9), "TO_CHECK");
-  s9.merchantToken = "MT-S9";
   s9.noteToOps =
     "自助补件已进入人工齐套检查，请分别检查地址证明与商业登记文件。";
   const s9Merchant = merchantFor(s9.applicationId);
@@ -1488,24 +1403,13 @@ export function createSeed(now = Date.now()): Store {
     sourceWorkOrderId: s9.id,
     source: "AUTO",
     reasonCode: "DOC-UNUSABLE",
-    externalText:
-      "请上传清晰、完整的商业登记文件，确保登记编号和公司名称可辨认。",
+    externalText: { ...REASONS["DOC-UNUSABLE"].externalText },
     actionType: "UPLOAD",
     status: "PROVIDED",
     files: [
-      file(
-        s9Merchant,
-        "Haixi_Beauty_Business_Profile_201544318W.svg",
-        "ACRA · BUSINESS PROFILE",
-        [
-          ["ENTITY NAME", s9Merchant.legalName],
-          ["UNIQUE ENTITY NUMBER", s9Merchant.registrationNo],
-          ["STATUS", "Live Company"],
-          ["REGISTERED ADDRESS", addressIndex.get(s9Merchant.id)!],
-          ["PRINCIPAL ACTIVITY", "Retail sale of cosmetics and toiletries"],
-        ],
-        { blur: true, uploadedAt: iso(-40 * 60_000) },
-      ),
+      file(s9Merchant, "Haixi_Beauty_Business_Profile_201544318W.jpg", {
+        uploadedAt: iso(-40 * 60_000),
+      }),
     ],
   });
   const s10 = supplement(10, scenarioApp(6), "DONE", s6);
@@ -1637,14 +1541,7 @@ export function createSeed(now = Date.now()): Store {
     const suffix = { GB: "Ltd", SG: "Pte. Ltd.", HK: "Limited", DE: "GmbH" }[
       country
     ];
-    const registrationNo =
-      country === "GB"
-        ? String(15000000 + index * 371)
-        : country === "SG"
-          ? `2023${String(20000 + index * 43)}${"ABCDEFGHJKLMNPQRSTUVWXYZ"[index % 23]}`
-          : country === "HK"
-            ? String(3260000 + index * 117)
-            : `Amtsgericht Hamburg HRB ${190000 + index * 37}`;
+    const registrationNo = registrationNumber(country, `application:${number}`);
     const application = addApplication(number, {
       displayName: name,
       legalName: `${name} ${suffix}`,
@@ -1984,7 +1881,7 @@ export function createSeed(now = Date.now()): Store {
         "KYB-REG-NAME",
       ]);
       const merchant = merchantFor(app.id);
-      const check = addEvidence(order, "KYB-REG-NAME", 1, {
+      addEvidence(order, "KYB-REG-NAME", 1, {
         rows: [
           {
             field: "法定名称",
@@ -1992,18 +1889,19 @@ export function createSeed(now = Date.now()): Store {
             evidence: merchant.legalName,
             source: merchant.registrationAuthority,
             difference: "一致",
-            tolerance: "自动核验通过",
+            tolerance: "核对法定名称与登记文件",
           },
         ],
       });
       store.qa[order.id] = {
         id: `QA-${number}`,
         sampledObjectId: app.id,
+        snapshotId: `SNAP-${order.id}`,
+        reviewMode: "APPLICATION",
         batchId: "BATCH-DAILY-17",
         sampledAt: order.createdAt,
-        originalConclusions: { [check.id]: "ACCEPTABLE_DIFF" },
-        blindConclusions:
-          index >= 11 ? { [check.id]: "ACCEPTABLE_DIFF" } : undefined,
+        originalConclusions: { overall: "APPROVED" },
+        blindConclusions: index >= 11 ? { overall: "APPROVED" } : undefined,
         consistent: index === 12 ? true : undefined,
       };
       if (index === 12) order.outcome = "CONSISTENT";
@@ -2019,7 +1917,7 @@ export function createSeed(now = Date.now()): Store {
         {
           ...confirmedEvidence.fields.subject,
           id: "hit_closed_1",
-          listName: "Consolidated Sanctions List",
+          listName: "OFAC SDN List",
           listedAt: date(-90),
           strength: "HIGH",
           reason: "登记编号及主体名称一致",
@@ -2175,21 +2073,133 @@ export function createSeed(now = Date.now()): Store {
         decided(order, check, "ACCEPTABLE_DIFF", "格式");
     }
   }
+  // Sampling freezes the whole application dossier, not just exception evidence.
+  for (const order of store.orders.filter(
+    (candidate) =>
+      candidate.type === "QA" &&
+      store.qa[candidate.id].reviewMode === "APPLICATION",
+  )) {
+    const merchant = merchantFor(order.applicationId);
+    const people = peopleFor(merchant);
+    const samples: [string, string][] = [
+      ["KYB-REG-NAME", "主体登记资料"],
+      ["KYC-ID-TAMPER", "身份核验影像"],
+      ["CLS-MCC-MISMATCH", "经营类目与商品目录"],
+      ["WEB-MISMATCH", "经营网站与交易条款"],
+      ["KYB-UBO-COMPLEX", "股东名册与受益所有人"],
+      ["SYS-REPORT-DELAYED", "名单与公开资料检索记录"],
+    ];
+    for (const [index, [reason, title]] of samples.entries()) {
+      const check =
+        order.checkItems?.[index] ?? addEvidence(order, reason, index + 1);
+      check.title = title;
+      check.reasonCodes = [];
+      check.status = "PENDING";
+      const evidence = store.evidence.find(
+        (entry) => entry.id === check.evidenceIds[0],
+      )!;
+      if (check.checkType === "DATA_MATCH") {
+        evidence.fields.rows = [
+          ["法定名称", merchant.legalName],
+          ["登记编号", merchant.registrationNo],
+          ["注册地址", addressIndex.get(merchant.id)!],
+        ].map(([field, value]) => ({
+          field,
+          declared: value,
+          evidence: value,
+          source: merchant.registrationAuthority,
+          difference: "一致",
+          tolerance: "核对登记原件",
+        }));
+      } else if (check.checkType === "IDENTITY_MEDIA") {
+        evidence.fields.checks = [
+          { name: "证件有效期", passed: true, reason: "证件处于有效期" },
+          { name: "版面一致性", passed: true, reason: "字段与证件版式一致" },
+          { name: "人脸相似度", passed: true, reason: "相似度 98.2%" },
+          { name: "活体检测", passed: true, reason: "动作序列完整" },
+        ];
+      } else if (check.checkType === "CLASSIFICATION") {
+        evidence.fields.reportedMcc = merchant.declaredMcc;
+        evidence.fields.confidence = 0.98;
+      } else if (check.checkType === "WEBSITE") {
+        evidence.fields.policies = { refund: true, contact: true, terms: true };
+      } else if (check.checkType === "OWNERSHIP") {
+        evidence.fields.nodes = [
+          {
+            id: merchant.id,
+            name: merchant.legalName,
+            ownershipPct: 100,
+            type: "COMPANY",
+            verified: true,
+          },
+          ...people
+            .filter((person) => person.ownershipPct)
+            .map((person) => ({
+              id: person.id,
+              parentId: merchant.id,
+              name: person.name,
+              ownershipPct: person.ownershipPct,
+              type: "PERSON",
+              verified: true,
+            })),
+        ];
+        evidence.fields.documents = [
+          file(merchant, `Beneficial_Ownership_${merchant.id}.jpg`),
+        ];
+      } else if (check.checkType === "MANUAL_VERIFY") {
+        evidence.fields.missing = [];
+        evidence.fields.materials = [
+          registryFile(merchant),
+          file(merchant, `Public_Records_Search_${merchant.id}.jpg`),
+        ];
+      }
+    }
+    order.reasonCodes = [];
+    // Auto decisions are sampled at application level, never as manual judgments.
+    order.checkItems = [];
+  }
+
+  // Two active cases retain their elapsed SLA, including one in a personal queue.
+  for (const [number, overdueMinutes] of [
+    [100, 95],
+    [412, 42],
+  ]) {
+    const order = store.orders.find(
+      (candidate) => candidate.id === orderId(number),
+    )!;
+    const duration = order.priority === "HIGH" ? DAY : 2 * DAY;
+    order.createdAt = iso(-duration - overdueMinutes * 60_000);
+    order.enteredStatusAt = order.createdAt;
+    order.slaDueAt = iso(-overdueMinutes * 60_000);
+    if (order.assignee)
+      order.firstResponderAt = new Date(
+        Date.parse(order.createdAt) + 10 * 60_000,
+      ).toISOString();
+    for (const evidence of store.evidence.filter(
+      (entry) => entry.applicationId === order.applicationId,
+    ))
+      evidence.generatedAt = new Date(
+        Date.parse(order.createdAt) - 10 * 60_000,
+      ).toISOString();
+  }
+
   for (const evidence of store.evidence) {
     if (evidence.kind === "SCREENING_WATCHLIST")
       for (const hit of evidence.fields.hits ?? []) {
-        hit.source = "监管与制裁综合名单数据集（演示）";
+        hit.source = hit.listName;
         hit.program =
-          hit.listName === "Regional Enforcement List"
-            ? "地区监管执法项目"
-            : "国际制裁与限制交易项目";
+          hit.listName === "UK Sanctions List"
+            ? "英国金融制裁名单"
+            : "美国财政部特别指定国民和被封锁人员名单";
       }
     if (evidence.kind === "DATA_MATCH") {
       for (const row of evidence.fields.rows ?? []) {
         row.region =
           row.field === "注册地址"
-            ? { x: 4.4, y: 42, width: 89, height: 6.2 }
-            : { x: 4.4, y: 15, width: 89, height: 4.2 };
+            ? { x: 4.4, y: 46.5, width: 89, height: 7 }
+            : row.field === "登记编号"
+              ? { x: 4.4, y: 30.4, width: 89, height: 7 }
+              : { x: 4.4, y: 15, width: 89, height: 4.2 };
         row.fileId = evidence.fields.documents?.[0]?.id;
       }
     }
@@ -2259,7 +2269,9 @@ export function createSeed(now = Date.now()): Store {
       order.checkItems?.flatMap((check) => check.evidenceIds) ?? [],
     );
     const snapshotEvidence = store.evidence.filter((evidence) =>
-      evidenceIds.has(evidence.id),
+      order.type === "QA"
+        ? evidence.applicationId === order.applicationId
+        : evidenceIds.has(evidence.id),
     );
     for (const check of order.checkItems ?? [])
       if (check.status === "DECIDED") check.snapshotId = snapshotId;
@@ -2279,6 +2291,7 @@ export function createSeed(now = Date.now()): Store {
       checkItems: structuredClone(order.checkItems ?? []),
       evidence: structuredClone(snapshotEvidence),
     };
+    if (order.type === "QA") store.qa[order.id].sampledAt = snapshotAt;
     store.audit.push({
       id: `AUD-${order.id}`,
       objectId: order.id,
@@ -2355,9 +2368,15 @@ export function createSeed(now = Date.now()): Store {
     }
   for (const order of store.orders) {
     if (
-      !["CLOSED", "DONE", "CLOSED_NO_RESPONSE", "WITHDRAWN"].includes(
-        order.status,
-      ) &&
+      [
+        "IN_PROGRESS",
+        "TO_SEND",
+        "TO_CHECK",
+        "BLIND",
+        "COMPARE",
+        "PENDING_SECOND",
+        "PENDING_APPROVAL",
+      ].includes(order.status) &&
       order.assignee
     ) {
       const merchant = merchantFor(order.applicationId);
@@ -2382,17 +2401,7 @@ export function createSeed(now = Date.now()): Store {
           ),
           read: false,
         });
-      const remaining = Date.parse(order.slaDueAt) - now;
-      if (!order.slaPaused && remaining > 0 && remaining <= 2 * HOUR)
-        store.notifications.push({
-          id: `NOT-SLA-${order.id}`,
-          type: "SLA",
-          userId: order.assignee.id,
-          title: `${merchant.displayName}的工单即将达到处理时限`,
-          workOrderId: order.id,
-          at: iso(-jitter(`sla-notification:${order.id}`, 12 * 60_000)),
-          read: false,
-        });
+      // SLA reminders are aggregated once per recipient below.
     }
     for (const extension of order.extensions ?? [])
       if (extension.status === "PENDING" && extension.assignedTo)
@@ -2405,6 +2414,27 @@ export function createSeed(now = Date.now()): Store {
           at: extension.requestedAt,
           read: false,
         });
+  }
+  for (const recipient of store.users) {
+    const actionable = store.orders.filter(
+      (order) =>
+        order.assignee?.id === recipient.id &&
+        !order.slaPaused &&
+        !["CLOSED", "DONE", "CLOSED_NO_RESPONSE", "WITHDRAWN"].includes(
+          order.status,
+        ) &&
+        Date.parse(order.slaDueAt) - now <= 2 * HOUR,
+    );
+    if (actionable.length)
+      store.notifications.push({
+        id: `NOT-SLA-${recipient.id}`,
+        type: "SLA",
+        userId: recipient.id,
+        title: `${actionable.length} 张工单已超时或即将到期，请及时处理`,
+        count: actionable.length,
+        at: iso(-5 * 60_000),
+        read: false,
+      });
   }
   return store;
 }

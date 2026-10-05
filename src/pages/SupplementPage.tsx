@@ -1,25 +1,27 @@
 import { useEffect, useState } from "react";
-import { useHref } from "react-router-dom";
+import { useHref, useSearchParams } from "react-router-dom";
 import { Banner } from "@astryxdesign/core/Banner";
 import { BottomSheet } from "@astryxdesign/core/BottomSheet";
 import {
   DateTimeInput,
   type ISODateTimeString,
 } from "@astryxdesign/core/DateTimeInput";
-import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { Dialog } from "@astryxdesign/core/Dialog";
 import { DropdownMenu } from "@astryxdesign/core/DropdownMenu";
 import { Link } from "@astryxdesign/core/Link";
 import { Selector } from "@astryxdesign/core/Selector";
-import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import dayjs from "dayjs";
 import { api } from "../api";
-import { useOrder, useQueueFlow, useSession } from "../hooks";
+import { useDetailView, useOrder, useQueueFlow, useSession } from "../hooks";
 import {
   Badge,
   Btn,
   Confirm,
+  DetailSection,
+  DetailTabs,
+  DialogHeader,
   Empty,
   Field,
   FileUpload,
@@ -27,12 +29,14 @@ import {
   InlineConfirm,
   LoadState,
   OrderHeader,
+  OrderSummary,
   Panel,
   PersonName,
   Timeline,
 } from "../ui";
 import { dateTime, deadlineDate } from "../format";
 import type {
+  CommunicationLanguage,
   ContactLog,
   MutationAction,
   NoticePreview,
@@ -75,84 +79,107 @@ const contactResults = {
 export function MaterialPreview({
   files,
   value,
+  language = "zh",
+  merchant = false,
 }: {
   files?: UploadedFile[];
   value?: string;
+  language?: CommunicationLanguage;
+  merchant?: boolean;
 }) {
-  const [selected, setSelected] = useState("");
-  const [imageOpen, setImageOpen] = useState(false);
-  const file = files?.find((item) => item.id === selected) || files?.[0];
+  const [selected, setSelected] = useState<UploadedFile>();
   const source =
-    file?.url ||
-    (file?.content?.startsWith("data:") ? file.content : undefined);
+    selected?.url ||
+    (selected?.content?.startsWith("data:") ? selected.content : undefined);
+  const text = (zh: string, en: string) => (language === "zh" ? zh : en);
   return (
-    <div className="material-preview">
-      {value && (
-        <dl className="details-grid ops-details-single">
-          <div>
-            <dt>提交内容</dt>
-            <dd className="ops-preserve">{value}</dd>
-          </div>
-        </dl>
-      )}
+    <div className="material-preview" lang={language}>
+      {value && <p className="ops-preserve">{value}</p>}
       {!!files?.length && (
-        <>
-          <ul className="ops-record-list">
-            {files.map((item) => (
-              <li key={item.id}>
-                <Btn variant="ghost" onClick={() => setSelected(item.id)}>
-                  {item.name}
-                </Btn>
-                <div className="row secondary">
-                  <span>
-                    {(item.size / 1024).toFixed(1)} KB
-                    {item.pages ? ` · ${item.pages} 页` : ""}
-                  </span>
-                  <PersonName user={item.uploadedBy} />
-                  <span>{dateTime(item.uploadedAt)}</span>
-                </div>
-              </li>
-            ))}
-          </ul>
-          {source &&
-            (file?.type.startsWith("image/") ? (
-              <div className="ops-image-preview">
-                <img
-                  src={source}
-                  alt={file.name}
-                  className="ops-document-image"
-                />
-                <Btn onClick={() => setImageOpen(true)}>放大查看</Btn>
-                <Dialog
-                  isOpen={imageOpen}
-                  onOpenChange={setImageOpen}
-                  width={1100}
+        <ul className="ops-thumbnail-list">
+          {files.map((file) => {
+            const url =
+              file.url ||
+              (file.content?.startsWith("data:") ? file.content : undefined);
+            return (
+              <li key={file.id}>
+                <button
+                  type="button"
+                  className="ops-thumbnail"
+                  onClick={() => setSelected(file)}
+                  aria-label={`${text("预览", "Preview")} ${file.name}`}
                 >
-                  <DialogHeader title={file.name} onOpenChange={setImageOpen} />
-                  <img
-                    src={source}
-                    alt={file.name}
-                    className="ops-document-full"
-                  />
-                </Dialog>
-              </div>
-            ) : file?.type === "application/pdf" ? (
-              <iframe
-                className="ops-document-frame"
-                title={file.name}
-                src={source}
-              />
-            ) : (
-              <Link href={source} download={file?.name}>
-                下载 {file?.name}
-              </Link>
-            ))}
-          {!source && file?.content && (
-            <pre className="ops-document-text">{file.content}</pre>
-          )}
-        </>
+                  <span className="ops-thumbnail-image" aria-hidden="true">
+                    {url && file.type.startsWith("image/") ? (
+                      <img src={url} alt="" loading="lazy" />
+                    ) : url && file.type === "application/pdf" ? (
+                      <iframe
+                        src={`${url}#toolbar=0&navpanes=0&view=FitH`}
+                        title={file.name}
+                        tabIndex={-1}
+                        loading="lazy"
+                      />
+                    ) : (
+                      <span>{text("文件", "File")}</span>
+                    )}
+                  </span>
+                  <strong>{file.name}</strong>
+                  <span className="secondary">
+                    {(file.size / 1024).toFixed(1)} KB
+                  </span>
+                </button>
+                {!merchant && (
+                  <div className="secondary">
+                    <PersonName user={file.uploadedBy} /> ·{" "}
+                    {dateTime(file.uploadedAt)}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       )}
-      {!files?.length && !value && <Empty title="商户尚未提交本项内容" />}
+      <Dialog
+        isOpen={!!selected}
+        onOpenChange={(open) => {
+          if (!open) setSelected(undefined);
+        }}
+        width={1100}
+      >
+        <DialogHeader
+          title={selected?.name || text("文件预览", "File preview")}
+          onOpenChange={() => setSelected(undefined)}
+        />
+        {selected &&
+          source &&
+          (selected.type.startsWith("image/") ? (
+            <img
+              src={source}
+              alt={selected.name}
+              className="ops-document-full"
+            />
+          ) : selected.type === "application/pdf" ? (
+            <iframe
+              className="ops-document-frame"
+              title={selected.name}
+              src={source}
+            />
+          ) : (
+            <Link href={source} download={selected.name}>
+              {text("下载", "Download")} {selected.name}
+            </Link>
+          ))}
+        {selected && !source && (
+          <pre className="ops-document-text">
+            {selected.content || text("文件暂不可预览", "Preview unavailable")}
+          </pre>
+        )}
+      </Dialog>
+      {!files?.length && !value && (
+        <p className="secondary">
+          {text("商户尚未提交本项内容", "No information submitted yet")}
+        </p>
+      )}
     </div>
   );
 }
@@ -162,9 +189,29 @@ export default function SupplementPage() {
   const queueFlow = useQueueFlow();
   const merchantHref = useHref("/merchant/");
   const { data, loading, error, stale, busy, reload, act } = useOrder();
-  const [tab, setTab] = useState("workspace");
+  const [tab, setTab] = useDetailView("workspace", [
+    "workspace",
+    ...(session.role === "OPS_AGENT" ||
+    session.role === "OPS_LEAD" ||
+    data?.workOrder.contactLog
+      ? ["contacts"]
+      : []),
+    ...(session.role === "OPS_AGENT" || session.role === "OPS_LEAD"
+      ? ["notices"]
+      : []),
+    "extensions",
+    ...(data?.audit ? ["audit"] : []),
+  ]);
   const [copyStatus, setCopyStatus] = useState("");
-  const [selectedId, setSelectedId] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedId = searchParams.get("item") || "";
+  function setSelectedId(id: string) {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.set("item", id);
+      return next;
+    });
+  }
   const [dialog, setDialog] = useState("");
   const [noticeOpen, setNoticeOpen] = useState(false);
   const [noticeChannel, setNoticeChannel] = useState<
@@ -183,7 +230,7 @@ export default function SupplementPage() {
   const [contactResult, setContactResult] =
     useState<NonNullable<ContactLog["result"]>>("CONNECTED");
   const [promisedAt, setPromisedAt] = useState<dayjs.Dayjs | null>(null);
-  const [quality, setQuality] = useState<"USABLE" | "REJECTED" | "MISSING">();
+  const [rejectItemId, setRejectItemId] = useState("");
   const [rejectReason, setRejectReason] = useState("");
   const [reason, setReason] = useState("");
   const [releaseReason, setReleaseReason] = useState("");
@@ -233,15 +280,7 @@ export default function SupplementPage() {
   const firstExtension = !extensions.some((item) => item.status === "APPROVED");
   const currentExtension = extensions.find((item) => item.id === extensionId);
   useEffect(() => {
-    setQuality(
-      selected?.checked && selected.status === "PROVIDED"
-        ? "USABLE"
-        : selected?.status === "REJECTED"
-          ? "REJECTED"
-          : selected?.status === "MISSING"
-            ? "MISSING"
-            : undefined,
-    );
+    setRejectItemId("");
     setRejectReason(selected?.rejectReason || "");
   }, [
     selected?.id,
@@ -251,10 +290,8 @@ export default function SupplementPage() {
   ]);
   useEffect(() => {
     setDialog("");
-    setTab("workspace");
     setCopyStatus("");
     setNoticeOpen(false);
-    setSelectedId("");
     setReleaseReason("");
   }, [w?.id, session.userId]);
   useEffect(() => {
@@ -435,39 +472,27 @@ export default function SupplementPage() {
     ops && w && !terminal ? (
       <div className="row">
         {!w.assignee ? (
-          <InlineConfirm
-            title="领取工单并继续当前操作？"
-            confirmLabel="领取并继续"
+          <Btn
+            variant="primary"
             disabled={busy || stale}
             busy={busy}
-            onConfirm={async () => {
+            onClick={async () => {
               if (await execute("claim")) {
                 if (w.status === "TO_SEND" || pendingNotices.length)
                   openNotice();
                 else if (w.status === "TO_CHECK") {
-                  if (allUsable) open("complete");
-                  else
+                  setTab("workspace");
+                  requestAnimationFrame(() =>
                     document
                       .getElementById("supplement-quality")
-                      ?.scrollIntoView({ block: "center" });
-                } else open("contact");
+                      ?.scrollIntoView({ block: "center" }),
+                  );
+                }
               }
             }}
           >
-            <Btn
-              variant="primary"
-              disabled={busy || stale}
-              title={busy || stale ? disabledReason : undefined}
-            >
-              {w.status === "TO_SEND" || pendingNotices.length
-                ? "发送通知"
-                : w.status === "TO_CHECK"
-                  ? allUsable
-                    ? "完成补件"
-                    : "开始齐套检查"
-                  : "记录沟通"}
-            </Btn>
-          </InlineConfirm>
+            领取并处理
+          </Btn>
         ) : (
           <>
             {w.status === "TO_SEND" || pendingNotices.length > 0 ? (
@@ -584,11 +609,11 @@ export default function SupplementPage() {
       </div>
     ) : null;
   return (
-    <div className="page ops-pages">
+    <div className="page ops-pages detail-page">
       <LoadState loading={loading} error={error} retry={reload}>
         {data && w && (
           <>
-            <OrderHeader data={data} actions={actions} />
+            <OrderHeader data={data} />
             {stale && (
               <Banner
                 status="warning"
@@ -606,229 +631,257 @@ export default function SupplementPage() {
                 }
               />
             )}
-            <TabList value={tab} onChange={setTab} role="tablist" hasDivider>
-              <Tab
-                value="workspace"
-                label="补件工作台"
-                panelId="supplement-workspace"
-              />
-              {!!extensions.length && (
-                <Tab
-                  value="extensions"
-                  label="延期记录"
-                  panelId="supplement-extensions"
-                />
-              )}
-              {!ops && w.contactLog && (
-                <Tab
-                  value="contacts"
-                  label="沟通记录"
-                  panelId="supplement-contacts"
-                />
-              )}
-              {data.audit && (
-                <Tab
-                  value="audit"
-                  label="操作日志"
-                  panelId="supplement-audit"
-                />
-              )}
-            </TabList>
-            {tab === "workspace" && (
-              <div
-                id="supplement-workspace"
-                role="tabpanel"
-                aria-label="补件工作台"
-                className={`supplement-workspace ${!ops ? "supplement-readonly" : ""}`}
-              >
-                <div className="ops-main-column">
-                  {w.noteToOps && (
-                    <div className="ops-info-note" role="note">
-                      <strong>给运营的说明</strong>
-                      <p>{w.noteToOps}</p>
-                    </div>
-                  )}
-                  <Panel
-                    title={`补件清单 · ${items.length} 项`}
-                    className="ops-list-panel"
-                  >
-                    {items.length ? (
-                      <ul className="ops-item-list">
-                        {items.map((item) => (
-                          <li
-                            key={item.id}
-                            className={
-                              selected?.id === item.id ? "ops-selected" : ""
-                            }
-                          >
-                            <Btn
-                              variant="ghost"
-                              className="ops-item-button"
-                              onClick={() => setSelectedId(item.id)}
-                            >
-                              {item.externalText}
-                            </Btn>
-                            <div className="row ops-item-meta">
-                              <span className="secondary">
-                                {supplementActionLabels[item.actionType]}
-                              </span>
-                              <Badge
-                                tone={
-                                  item.status === "REJECTED"
-                                    ? "danger"
-                                    : item.checked
-                                      ? "success"
-                                      : "neutral"
-                                }
-                              >
-                                {item.checked && item.status === "PROVIDED"
-                                  ? "可用"
-                                  : itemLabels[item.status]}
-                              </Badge>
-                            </div>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <Empty title="暂无补件项" />
-                    )}
-                  </Panel>
-                </div>
-                <Panel
-                  title={selected?.externalText || "提交内容"}
-                  className="ops-center-panel"
-                >
-                  {selected ? (
-                    <div className="stack">
-                      <MaterialPreview
-                        files={selected.files}
-                        value={selected.response}
-                      />
-                      {selected.rejectReason && (
-                        <Banner
-                          status="warning"
-                          title={`不合格原因：${selected.rejectReason}`}
-                        />
-                      )}
-                      {selected.checkedBy && (
-                        <div className="secondary">
-                          检查人：
-                          <PersonName user={selected.checkedBy} /> ·{" "}
-                          {dateTime(selected.checkedAt)}
+            <DetailTabs
+              id="supplement"
+              value={tab}
+              onChange={setTab}
+              items={[
+                { value: "workspace", label: "材料检查", count: items.length },
+                ...(ops || w.contactLog
+                  ? [
+                      {
+                        value: "contacts",
+                        label: "联系与沟通",
+                        count: w.contactLog?.length,
+                      },
+                    ]
+                  : []),
+                ...(ops ? [{ value: "notices", label: "补件通知" }] : []),
+                {
+                  value: "extensions",
+                  label: "截止与延期",
+                  count: extensions.length,
+                },
+                ...(data.audit ? [{ value: "audit", label: "操作日志" }] : []),
+              ]}
+            />
+            <div className="detail-layout">
+              <div className="detail-main">
+                <DetailSection id="supplement" value="workspace" active={tab}>
+                  <div className="supplement-workspace">
+                    <div className="ops-main-column">
+                      {w.noteToOps && (
+                        <div className="ops-info-note" role="note">
+                          <strong>给运营的说明</strong>
+                          <p>{w.noteToOps}</p>
                         </div>
                       )}
-                      {ops && w.status === "TO_CHECK" && (
-                        <section
-                          className="ops-quality"
-                          id="supplement-quality"
-                        >
-                          <h2 className="section-title">齐套检查</h2>
-                          <Selector
-                            label="检查结论"
-                            value={quality}
-                            isDisabled={disabled}
-                            onChange={(value) =>
-                              setQuality(value as typeof quality)
-                            }
-                            options={[
-                              { value: "USABLE", label: "可用" },
-                              { value: "REJECTED", label: "不合格" },
-                              { value: "MISSING", label: "未提供" },
-                            ]}
+                      <Panel
+                        title={`补件清单 · ${items.length} 项`}
+                        className="ops-list-panel"
+                      >
+                        {items.length ? (
+                          <ul className="ops-item-list">
+                            {items.map((item) => (
+                              <li
+                                key={item.id}
+                                className={
+                                  selected?.id === item.id ? "ops-selected" : ""
+                                }
+                              >
+                                <button
+                                  type="button"
+                                  className="ops-item-button"
+                                  aria-pressed={selected?.id === item.id}
+                                  onClick={() => setSelectedId(item.id)}
+                                >
+                                  {item.externalText.zh}
+                                </button>
+                                <div className="row ops-item-meta">
+                                  <span className="secondary">
+                                    {supplementActionLabels[item.actionType]}
+                                  </span>
+                                  <Badge
+                                    tone={
+                                      item.status === "REJECTED"
+                                        ? "danger"
+                                        : item.checked
+                                          ? "success"
+                                          : "neutral"
+                                    }
+                                  >
+                                    {item.checked && item.status === "PROVIDED"
+                                      ? "可用"
+                                      : itemLabels[item.status]}
+                                  </Badge>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <Empty title="暂无补件项" />
+                        )}
+                      </Panel>
+                    </div>
+                    <Panel
+                      title={selected?.externalText.zh || "提交内容"}
+                      className="ops-center-panel"
+                    >
+                      {selected ? (
+                        <div className="stack">
+                          <MaterialPreview
+                            files={selected.files}
+                            value={selected.response}
                           />
-                          {quality === "REJECTED" && (
-                            <Selector
-                              label="不合格原因"
-                              isRequired
-                              value={rejectReason || undefined}
-                              options={rejectOptions}
-                              onChange={setRejectReason}
-                              isDisabled={disabled}
+                          {selected.rejectReason && (
+                            <Banner
+                              status="warning"
+                              title={`不合格原因：${selected.rejectReason}`}
                             />
                           )}
-                          <div className="action-row">
-                            <Btn
-                              disabled={
-                                disabled ||
-                                !quality ||
-                                (quality === "REJECTED" && !rejectReason) ||
-                                (quality === "USABLE" &&
-                                  selected.status !== "PROVIDED")
-                              }
-                              busy={busy}
-                              title={
-                                disabledReason ||
-                                (!quality
-                                  ? "判定本项：选择检查结论后可用"
-                                  : quality === "REJECTED" && !rejectReason
-                                    ? "判定本项：选择不合格原因后可用"
-                                    : quality === "USABLE" &&
-                                        selected.status !== "PROVIDED"
-                                      ? "判定可用：商户提供本项材料后可用"
-                                      : undefined)
-                              }
-                              onClick={() =>
-                                void execute("supplement-check", {
-                                  itemId: selected.id,
-                                  result: quality,
-                                  ...(quality === "REJECTED"
-                                    ? { reason: rejectReason }
-                                    : quality === "MISSING"
-                                      ? { reason: "未提供" }
-                                      : {}),
-                                })
-                              }
+                          {selected.checkedBy && (
+                            <div className="secondary">
+                              检查人：
+                              <PersonName user={selected.checkedBy} /> ·{" "}
+                              {dateTime(selected.checkedAt)}
+                            </div>
+                          )}
+                          {ops && w.status === "TO_CHECK" && (
+                            <section
+                              className="ops-quality"
+                              id="supplement-quality"
                             >
-                              判定本项
-                            </Btn>
-                          </div>
-                        </section>
-                      )}
-                    </div>
-                  ) : (
-                    <Empty title="暂无待检查材料" />
-                  )}
-                </Panel>
-                {ops && (
-                  <aside className="ops-side">
-                    <Panel title="商户联系人">
-                      {contacts.length ? (
-                        contacts.map((person) => (
-                          <dl
-                            key={person.email}
-                            className="details-grid ops-details-single"
-                          >
-                            <div>
-                              <dt>姓名</dt>
-                              <dd>{person.name}</dd>
-                            </div>
-                            <div>
-                              <dt>邮箱</dt>
-                              <dd>{person.email || "—"}</dd>
-                            </div>
-                            <div>
-                              <dt>电话</dt>
-                              <dd>{person.phone || "—"}</dd>
-                            </div>
-                            <div>
-                              <dt>首选渠道</dt>
-                              <dd>{channels[person.preferredChannel]}</dd>
-                            </div>
-                          </dl>
-                        ))
+                              <h2 className="section-title">齐套检查</h2>
+                              <div
+                                className="ops-quality-segments"
+                                role="group"
+                                aria-label="检查结论"
+                              >
+                                {(
+                                  [
+                                    ["USABLE", "可用"],
+                                    ["REJECTED", "不合格"],
+                                    ["MISSING", "未提供"],
+                                  ] as const
+                                ).map(([result, label]) => (
+                                  <button
+                                    key={result}
+                                    type="button"
+                                    className={
+                                      result === "REJECTED"
+                                        ? "ops-quality-reject"
+                                        : ""
+                                    }
+                                    aria-pressed={
+                                      result === "USABLE"
+                                        ? selected.checked &&
+                                          selected.status === "PROVIDED"
+                                        : selected.status === result
+                                    }
+                                    disabled={
+                                      disabled ||
+                                      (result === "USABLE" &&
+                                        selected.status !== "PROVIDED")
+                                    }
+                                    title={
+                                      disabledReason ||
+                                      (result === "USABLE" &&
+                                      selected.status !== "PROVIDED"
+                                        ? "商户提供本项材料后可判定可用"
+                                        : undefined)
+                                    }
+                                    onClick={() => {
+                                      if (result === "REJECTED") {
+                                        setRejectReason(
+                                          selected.rejectReason || "",
+                                        );
+                                        setRejectItemId(selected.id);
+                                      } else {
+                                        void execute("supplement-check", {
+                                          itemId: selected.id,
+                                          result,
+                                          ...(result === "MISSING"
+                                            ? { reason: "未提供" }
+                                            : {}),
+                                        });
+                                      }
+                                    }}
+                                  >
+                                    {label}
+                                  </button>
+                                ))}
+                              </div>
+                            </section>
+                          )}
+                        </div>
                       ) : (
-                        <Empty title="尚未登记联系人" />
+                        <Empty title="暂无待检查材料" />
                       )}
                     </Panel>
+                  </div>
+                </DetailSection>
+                <DetailSection id="supplement" value="contacts" active={tab}>
+                  {ops && (
+                    <div className="ops-contact-layout">
+                      <Panel title="商户联系人">
+                        {contacts.length ? (
+                          contacts.map((person) => (
+                            <dl
+                              key={person.email}
+                              className="details-grid ops-details-single"
+                            >
+                              <div>
+                                <dt>姓名</dt>
+                                <dd>{person.name}</dd>
+                              </div>
+                              <div>
+                                <dt>邮箱</dt>
+                                <dd>{person.email || "—"}</dd>
+                              </div>
+                              <div>
+                                <dt>电话</dt>
+                                <dd>{person.phone || "—"}</dd>
+                              </div>
+                              <div>
+                                <dt>首选渠道</dt>
+                                <dd>{channels[person.preferredChannel]}</dd>
+                              </div>
+                            </dl>
+                          ))
+                        ) : (
+                          <Empty title="尚未登记联系人" />
+                        )}
+                      </Panel>
+                      <Panel title="沟通记录">
+                        {w.contactLog?.length ? (
+                          <ol className="ops-record-list">
+                            {w.contactLog.map((log, index) => (
+                              <li key={index}>
+                                <div className="row">
+                                  <Badge>{channels[log.channel]}</Badge>
+                                  <PersonName user={log.by} />
+                                </div>
+                                <p>{log.summary}</p>
+                                {log.contact && <p>联系人：{log.contact}</p>}
+                                {log.result && (
+                                  <p>
+                                    {contactResults[log.result]}
+                                    {log.promisedAt
+                                      ? ` · ${deadlineDate(log.promisedAt, data.merchant.country)}`
+                                      : ""}
+                                  </p>
+                                )}
+                                <span className="secondary">
+                                  {dateTime(log.at)}
+                                </span>
+                              </li>
+                            ))}
+                          </ol>
+                        ) : (
+                          <Empty title="暂无沟通记录" />
+                        )}
+                      </Panel>
+                    </div>
+                  )}
+                  {!ops && w.contactLog && (
                     <Panel title="沟通记录">
-                      {w.contactLog?.length ? (
+                      {w.contactLog.length ? (
                         <ol className="ops-record-list">
                           {w.contactLog.map((log, index) => (
                             <li key={index}>
-                              <div className="row">
-                                <Badge>{channels[log.channel]}</Badge>
-                                <PersonName user={log.by} />
-                              </div>
+                              <span>
+                                {channels[log.channel]} · {dateTime(log.at)}
+                              </span>
                               <p>{log.summary}</p>
                               {log.contact && <p>联系人：{log.contact}</p>}
                               {log.result && (
@@ -839,9 +892,6 @@ export default function SupplementPage() {
                                     : ""}
                                 </p>
                               )}
-                              <span className="secondary">
-                                {dateTime(log.at)}
-                              </span>
                             </li>
                           ))}
                         </ol>
@@ -849,11 +899,27 @@ export default function SupplementPage() {
                         <Empty title="暂无沟通记录" />
                       )}
                     </Panel>
+                  )}
+                </DetailSection>
+                <DetailSection id="supplement" value="notices" active={tab}>
+                  {ops && (
                     <Panel title="通知模板">
                       <p>资料补充通知</p>
                       <p className="secondary">
                         {noticeItems.length} 项 · 邮件 / 短信 / 门户
                       </p>
+                      {(w.status === "TO_SEND" ||
+                        pendingNotices.length > 0) && (
+                        <div className="action-row">
+                          <Btn
+                            disabled={disabled}
+                            title={disabledReason || undefined}
+                            onClick={openNotice}
+                          >
+                            预览并发送通知
+                          </Btn>
+                        </div>
+                      )}
                       {w.merchantToken && (
                         <div className="stack">
                           <Link href={`${merchantHref}${w.merchantToken}`}>
@@ -863,7 +929,10 @@ export default function SupplementPage() {
                             onClick={() => {
                               void navigator.clipboard
                                 .writeText(
-                                  `https://merchant.futurepay.example/supplements/${w.merchantToken}`,
+                                  new URL(
+                                    `${merchantHref}${w.merchantToken}`,
+                                    window.location.href,
+                                  ).href,
                                 )
                                 .then(
                                   () => setCopyStatus("补件链接已复制"),
@@ -882,125 +951,157 @@ export default function SupplementPage() {
                         </div>
                       )}
                     </Panel>
-                  </aside>
+                  )}
+                </DetailSection>
+                <DetailSection id="supplement" value="extensions" active={tab}>
+                  <Panel title="当前截止">
+                    <dl className="details-grid">
+                      <div>
+                        <dt>商户补交截止</dt>
+                        <dd>{deadlineDate(w.dueAt, data.merchant.country)}</dd>
+                      </div>
+                      <div>
+                        <dt>延期审批</dt>
+                        <dd>
+                          {pendingExtension
+                            ? "待组长批准，原截止仍有效"
+                            : "无待审批申请"}
+                        </dd>
+                      </div>
+                    </dl>
+                  </Panel>
+                  <Panel title="延期记录">
+                    {!extensions.length && <Empty title="暂无延期记录" />}
+                    <ul className="ops-record-list">
+                      {extensions.map((item) => (
+                        <li key={item.id}>
+                          <div className="spread">
+                            <div className="row">
+                              <PersonName user={item.requestedBy} />
+                              <Badge>
+                                {item.status === "PENDING"
+                                  ? "待组长批准"
+                                  : item.status === "APPROVED"
+                                    ? "已批准"
+                                    : "已驳回"}
+                              </Badge>
+                            </div>
+                            {ops &&
+                              session.role === "OPS_LEAD" &&
+                              item.status === "PENDING" && (
+                                <div className="row">
+                                  <Btn
+                                    disabled={busy || stale}
+                                    title={
+                                      busy
+                                        ? "正在保存，请完成后再操作"
+                                        : stale
+                                          ? "工单已更新，刷新后可审批"
+                                          : undefined
+                                    }
+                                    onClick={() => {
+                                      setExtensionId(item.id);
+                                      open("approve-extension");
+                                    }}
+                                  >
+                                    批准
+                                  </Btn>
+                                  <Btn
+                                    variant="danger"
+                                    disabled={busy || stale}
+                                    title={
+                                      busy
+                                        ? "正在保存，请完成后再操作"
+                                        : stale
+                                          ? "工单已更新，刷新后可审批"
+                                          : undefined
+                                    }
+                                    onClick={() => {
+                                      setExtensionId(item.id);
+                                      open("reject-extension");
+                                    }}
+                                  >
+                                    驳回
+                                  </Btn>
+                                </div>
+                              )}
+                          </div>
+                          <p>
+                            {deadlineDate(
+                              item.originalDueAt,
+                              data.merchant.country,
+                            )}{" "}
+                            →{" "}
+                            {deadlineDate(
+                              item.requestedDueAt,
+                              data.merchant.country,
+                            )}
+                          </p>
+                          <p>{item.reason}</p>
+                        </li>
+                      ))}
+                    </ul>
+                  </Panel>
+                </DetailSection>
+                {data.audit && (
+                  <DetailSection id="supplement" value="audit" active={tab}>
+                    <Panel title="操作日志">
+                      <Timeline audit={data.audit} />
+                    </Panel>
+                  </DetailSection>
                 )}
               </div>
-            )}
-            {tab === "extensions" && (
-              <div
-                id="supplement-extensions"
-                role="tabpanel"
-                aria-label="延期记录"
-              >
-                <Panel title="延期记录">
-                  <ul className="ops-record-list">
-                    {extensions.map((item) => (
-                      <li key={item.id}>
-                        <div className="spread">
-                          <div className="row">
-                            <PersonName user={item.requestedBy} />
-                            <Badge>
-                              {item.status === "PENDING"
-                                ? "待组长批准"
-                                : item.status === "APPROVED"
-                                  ? "已批准"
-                                  : "已驳回"}
-                            </Badge>
-                          </div>
-                          {ops &&
-                            session.role === "OPS_LEAD" &&
-                            item.status === "PENDING" && (
-                              <div className="row">
-                                <Btn
-                                  disabled={busy || stale}
-                                  title={
-                                    busy
-                                      ? "正在保存，请完成后再操作"
-                                      : stale
-                                        ? "工单已更新，刷新后可审批"
-                                        : undefined
-                                  }
-                                  onClick={() => {
-                                    setExtensionId(item.id);
-                                    open("approve-extension");
-                                  }}
-                                >
-                                  批准
-                                </Btn>
-                                <Btn
-                                  variant="danger"
-                                  disabled={busy || stale}
-                                  title={
-                                    busy
-                                      ? "正在保存，请完成后再操作"
-                                      : stale
-                                        ? "工单已更新，刷新后可审批"
-                                        : undefined
-                                  }
-                                  onClick={() => {
-                                    setExtensionId(item.id);
-                                    open("reject-extension");
-                                  }}
-                                >
-                                  驳回
-                                </Btn>
-                              </div>
-                            )}
-                        </div>
-                        <p>
-                          {deadlineDate(
-                            item.originalDueAt,
-                            data.merchant.country,
-                          )}{" "}
-                          →{" "}
-                          {deadlineDate(
-                            item.requestedDueAt,
-                            data.merchant.country,
-                          )}
-                        </p>
-                        <p>{item.reason}</p>
-                      </li>
-                    ))}
-                  </ul>
-                </Panel>
-              </div>
-            )}
-            {tab === "contacts" && !ops && (
-              <div
-                id="supplement-contacts"
-                role="tabpanel"
-                aria-label="沟通记录"
-              >
-                <Panel title="沟通记录">
-                  <ol className="ops-record-list">
-                    {w.contactLog?.map((log, index) => (
-                      <li key={index}>
-                        <span>
-                          {channels[log.channel]} · {dateTime(log.at)}
-                        </span>
-                        <p>{log.summary}</p>
-                        {log.contact && <p>联系人：{log.contact}</p>}
-                        {log.result && (
-                          <p>
-                            {contactResults[log.result]}
-                            {log.promisedAt
-                              ? ` · ${deadlineDate(log.promisedAt, data.merchant.country)}`
-                              : ""}
-                          </p>
-                        )}
-                      </li>
-                    ))}
-                  </ol>
-                </Panel>
-              </div>
-            )}
-            {tab === "audit" && data.audit && (
-              <div id="supplement-audit" role="tabpanel" aria-label="操作日志">
-                <Panel>
-                  <Timeline audit={data.audit} />
-                </Panel>
-              </div>
-            )}
+              <aside className="detail-aside">
+                <OrderSummary data={data} title="当前处理" actions={actions}>
+                  <dl className="details-grid ops-details-single">
+                    <div>
+                      <dt>齐套进度</dt>
+                      <dd>
+                        {
+                          items.filter(
+                            (item) =>
+                              item.checked && item.status === "PROVIDED",
+                          ).length
+                        }{" "}
+                        / {items.length} 项可用
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>商户补交截止</dt>
+                      <dd>{deadlineDate(w.dueAt, data.merchant.country)}</dd>
+                    </div>
+                  </dl>
+                  <p className="secondary">
+                    {terminal
+                      ? "工单已结束，保留本次材料与处理记录。"
+                      : w.status === "TO_CHECK"
+                        ? allUsable
+                          ? "全部材料已判定可用，可以完成补件。"
+                          : "逐项查看提交内容并完成齐套检查；全部可用后才可完成补件。"
+                        : w.status === "TO_SEND" || pendingNotices.length
+                          ? "预览补件通知，确认收件人与通讯语言后发送。"
+                          : "等待商户补交，可记录沟通、催办或申请延期。"}
+                  </p>
+                </OrderSummary>
+                {pendingExtension && (
+                  <Panel title="待处理延期" className="detail-context">
+                    <p>
+                      申请截止：
+                      {deadlineDate(
+                        pendingExtension.requestedDueAt,
+                        data.merchant.country,
+                      )}
+                    </p>
+                    <Btn
+                      className="detail-shortcut"
+                      onClick={() => setTab("extensions")}
+                    >
+                      查看延期申请
+                    </Btn>
+                  </Panel>
+                )}
+              </aside>
+            </div>
             <BottomSheet
               isOpen={noticeOpen && ops}
               onOpenChange={(isOpen) => {
@@ -1051,7 +1152,7 @@ export default function SupplementPage() {
                       isDisabled={busy}
                     />
                     <p className="secondary">
-                      按商户语言生成中性文案，补件项目不可删除；不得加入内部审核信息。
+                      按申请登记的通讯语言生成中性文案，未登记时使用英文；补件项目不可删除，不得加入内部审核信息。
                     </p>
                     {noticeError && (
                       <Banner
@@ -1193,6 +1294,59 @@ export default function SupplementPage() {
                 </footer>
               </div>
             </BottomSheet>
+            <Dialog
+              isOpen={!!rejectItemId}
+              onOpenChange={(open) => {
+                if (!open && !busy) setRejectItemId("");
+              }}
+              purpose="form"
+              width={480}
+            >
+              <DialogHeader
+                title="说明不合格原因"
+                onOpenChange={() => {
+                  if (!busy) setRejectItemId("");
+                }}
+              />
+              <div className="stack ops-dialog-body">
+                <p>
+                  {
+                    items.find((item) => item.id === rejectItemId)?.externalText
+                      .zh
+                  }
+                </p>
+                <Selector
+                  label="不合格原因"
+                  isRequired
+                  value={rejectReason || undefined}
+                  options={rejectOptions}
+                  onChange={setRejectReason}
+                  isDisabled={disabled}
+                />
+              </div>
+              <footer className="ops-dialog-footer">
+                <Btn disabled={busy} onClick={() => setRejectItemId("")}>
+                  取消
+                </Btn>
+                <Btn
+                  variant="danger"
+                  disabled={disabled || !rejectReason}
+                  busy={busy}
+                  onClick={async () => {
+                    if (
+                      await execute("supplement-check", {
+                        itemId: rejectItemId,
+                        result: "REJECTED",
+                        reason: rejectReason,
+                      })
+                    )
+                      setRejectItemId("");
+                  }}
+                >
+                  确认不合格
+                </Btn>
+              </footer>
+            </Dialog>
             <Dialog
               isOpen={dialog === "contact"}
               onOpenChange={(isOpen) => {
@@ -1346,7 +1500,8 @@ export default function SupplementPage() {
                     <ul className="ops-record-list">
                       {rejected.map((item) => (
                         <li key={item.id}>
-                          {item.externalText} · {item.rejectReason || "未提供"}
+                          {item.externalText.zh} ·{" "}
+                          {item.rejectReason || "未提供"}
                         </li>
                       ))}
                     </ul>

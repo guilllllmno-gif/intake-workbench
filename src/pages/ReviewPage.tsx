@@ -8,11 +8,10 @@ import {
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
-import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { Dialog } from "@astryxdesign/core/Dialog";
 import { DropdownMenu } from "@astryxdesign/core/DropdownMenu";
 import { RadioList, RadioListItem } from "@astryxdesign/core/RadioList";
 import { Selector } from "@astryxdesign/core/Selector";
-import { TabList, Tab } from "@astryxdesign/core/TabList";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import {
   CheckCircle2,
@@ -33,6 +32,7 @@ import { api } from "../api";
 import {
   getQueueContext,
   useAsync,
+  useDetailView,
   useNotice,
   useOrder,
   useQueueFlow,
@@ -42,6 +42,9 @@ import {
   Badge,
   Empty,
   Confirm,
+  DetailSection,
+  DetailTabs,
+  DialogHeader,
   IdText,
   InlineConfirm,
   LoadState,
@@ -109,6 +112,13 @@ const itemDraft = (item?: CheckItem): ReviewDraft => ({
   reason: item?.conclusionReason ?? "",
   note: item?.note ?? "",
 });
+const referenceViews = [
+  "application",
+  "people",
+  "supplements",
+  "history",
+  "logs",
+] as const;
 export default function ReviewPage() {
   const { data, loading, error, stale, busy, reload, act } = useOrder();
   const { session } = useSession();
@@ -121,8 +131,14 @@ export default function ReviewPage() {
   const [previewReason, setPreviewReason] = useState("");
   const [outcome, setOutcome] = useState("APPROVED");
   const [supplementOpen, setSupplementOpen] = useState(false);
-  const [referenceOpen, setReferenceOpen] = useState(true);
-  const [referenceTab, setReferenceTab] = useState("application");
+  const [referenceOpen, setReferenceOpen] = useState(
+    () => window.innerWidth >= 1366 || params.has("reference"),
+  );
+  const [referenceTab, setReferenceTab] = useDetailView(
+    "application",
+    referenceViews,
+    "reference",
+  );
   const [comment, setComment] = useState("");
   const [formError, setFormError] = useState("");
   const [assigneeId, setAssigneeId] = useState<string>();
@@ -133,7 +149,6 @@ export default function ReviewPage() {
   const [draftRevision, setDraftRevision] = useState(0);
   const [draftStorageError, setDraftStorageError] = useState("");
   const finalAction = useRef<HTMLDivElement>(null);
-  const claimTrigger = useRef<HTMLDivElement>(null);
   const claimContinuation = useRef<(() => void) | null>(null);
   const completedNavigation = useRef(false);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
@@ -160,7 +175,7 @@ export default function ReviewPage() {
     checks.find((item) => item.id === params.get("item")) ??
     sortedChecks.find((item) => item.status === "PENDING") ??
     sortedChecks[0];
-  const draftPrefix = `intake-review-draft-v05:${session.userId}:${order?.id ?? ""}:`;
+  const draftPrefix = `intake-review-draft-v06:${session.userId}:${order?.id ?? ""}:`;
   const draftBook = useMemo(() => {
     const entries: Record<string, ReviewDraft> = {};
     if (!order) return entries;
@@ -445,7 +460,7 @@ export default function ReviewPage() {
     }
     remember(patch);
   };
-  const watchHits: { id: string }[] =
+  const watchHits: { id: string; strength: string }[] =
     selected?.checkType === "SCREENING_WATCHLIST"
       ? sourceEvidence.flatMap((source) => source.fields.hits ?? [])
       : [];
@@ -460,23 +475,30 @@ export default function ReviewPage() {
         )
       ? "FALSE_POSITIVE"
       : "UNCERTAIN";
+  const watchDoneCount = watchHits.filter((hit) => {
+    const choice = draft.hitConclusions[hit.id];
+    if (!choice?.conclusion || !choice.reason) return false;
+    const noteRequired =
+      choice.reason === "其他" ||
+      (/strong|high|强/i.test(hit.strength) &&
+        choice.conclusion === "FALSE_POSITIVE");
+    return !noteRequired || !!choice.note?.trim();
+  }).length;
   const watchComplete =
-    watchHits.length > 0 &&
-    watchHits.every(
-      (hit) =>
-        !!draft.hitConclusions[hit.id]?.conclusion &&
-        !!draft.hitConclusions[hit.id]?.reason,
-    );
+    watchHits.length > 0 && watchDoneCount === watchHits.length;
   const claimAndContinue = async () => {
     const result = await act("claim");
-    if (!result) throw new Error("领取未完成，请刷新工单后重试");
+    if (!result) {
+      claimContinuation.current = null;
+      return;
+    }
     const continuation = claimContinuation.current;
     claimContinuation.current = null;
     continuation?.();
   };
   const requestClaim = (continuation?: () => void) => {
     claimContinuation.current = continuation ?? null;
-    claimTrigger.current?.querySelector<HTMLButtonElement>("button")?.click();
+    void claimAndContinue();
   };
   const nextCase = () => {
     if (dirty)
@@ -671,9 +693,8 @@ export default function ReviewPage() {
     setOutcome(suggested);
     openPreview({
       title: suggested === "PENDING_APPROVAL" ? "提交审批" : "结案",
-      description: `系统建议${resultNames[suggested]}。通过后进入渠道进件；拒绝后终止申请；提交审批后由审批人按授权处置。${checks.some((item) => item.conclusion === "FRAUD_DECLINE") ? "欺诈拒绝将写入内部黑名单。" : ""}`,
-      merchant:
-        suggested === "DECLINED" ? "未通过，使用通用文案。" : "审核中。",
+      description: "",
+      merchant: suggested === "DECLINED" ? "未通过，使用通用文案。" : "审核中",
       sales:
         suggested === "DECLINED"
           ? "未通过；不披露类原因不展示类别。"
@@ -813,11 +834,11 @@ export default function ReviewPage() {
       : []),
   ];
   const referenceTabs = [
-    { key: "application", label: "申请信息" },
-    { key: "people", label: "人员" },
-    { key: "supplements", label: "补件进度" },
-    { key: "history", label: "历史" },
-    { key: "logs", label: "日志" },
+    { value: "application", label: "申请" },
+    { value: "people", label: "人员", count: data.people?.length },
+    { value: "supplements", label: "补件", count: data.supplements?.length },
+    { value: "history", label: "历史" },
+    { value: "logs", label: "日志" },
   ];
   const finalizeBlockReason = !canFinalize
     ? needsEscalation
@@ -829,26 +850,20 @@ export default function ReviewPage() {
           : "请完成所有检查项"
     : undefined;
   return (
-    <div className="review-workspace">
+    <div className="review-workspace detail-page">
       <header className="rv-header">
         <OrderHeader
           data={data}
           actions={
             <div className="row rv-header-actions">
               {canClaim && (
-                <InlineConfirm
-                  title="领取此工单并开始审核？"
-                  confirmLabel="领取并继续"
-                  onConfirm={claimAndContinue}
-                  busy={busy}
-                  disabled={stale}
-                >
-                  <Button
-                    label="领取"
-                    variant="primary"
-                    tooltip="领取后可提交审核结论"
-                  />
-                </InlineConfirm>
+                <Button
+                  label="领取"
+                  variant="primary"
+                  isLoading={busy}
+                  tooltip="领取后可提交审核结论"
+                  onClick={() => requestClaim()}
+                />
               )}
               {eligible && owner && order.status === "IN_PROGRESS" && (
                 <>
@@ -1052,8 +1067,8 @@ export default function ReviewPage() {
                           title: "忽略并说明",
                           description:
                             "记录忽略迟到硬拒的原因，收起建议拒绝提示，继续当前审核。",
-                          merchant: "审核中。",
-                          sales: "审核中。",
+                          merchant: "审核中",
+                          sales: "审核中",
                           reversible:
                             "忽略原因保留在审计记录中，不影响已存在的证据。",
                           label: "确认忽略",
@@ -1112,6 +1127,24 @@ export default function ReviewPage() {
           className={`rv-grid ${referenceOpen ? "" : "rv-reference-collapsed"}`}
         >
           <aside className="rv-checklist" aria-label="检查项清单">
+            <div className="rv-check-progress">
+              <div className="spread">
+                <strong>审核进度</strong>
+                <span>
+                  {checks.length - pending.length}/{checks.length}
+                </span>
+              </div>
+              <progress
+                aria-label="已完成检查项"
+                value={checks.length - pending.length}
+                max={Math.max(checks.length, 1)}
+              />
+              <span className="secondary">
+                {pending.length
+                  ? `还有 ${pending.length} 项待判断`
+                  : "检查项已完成 · 请确认整单结果"}
+              </span>
+            </div>
             {[
               {
                 label: "待处理",
@@ -1158,6 +1191,17 @@ export default function ReviewPage() {
                           {CHECK_LABELS[item.checkType]} ·{" "}
                           {item.reasonCodes.join("、")}
                         </span>
+                        {item.status !== "PENDING" && (
+                          <span
+                            className={`rv-check-decision ${DECLINE_CONCLUSIONS[item.conclusion ?? ""] ? "rv-danger" : ""}`}
+                          >
+                            {CHECK_OPTIONS[item.checkType].find(
+                              (option) => option.value === item.conclusion,
+                            )?.label ?? "自动结论"}
+                            {item.conclusionReason &&
+                              ` · ${item.conclusionReason}`}
+                          </span>
+                        )}
                         {item.hasNewEvidence && (
                           <Badge tone="info">新材料</Badge>
                         )}
@@ -1178,7 +1222,7 @@ export default function ReviewPage() {
                     : "证据审核"}
                 </h2>
                 <Button
-                  label={referenceOpen ? "收起参考" : "展开参考"}
+                  label={referenceOpen ? "收起参考" : "申请与记录"}
                   size="sm"
                   variant="ghost"
                   aria-expanded={referenceOpen}
@@ -1224,46 +1268,34 @@ export default function ReviewPage() {
                   }
                 }}
               >
-                {canClaim && (
-                  <div
-                    ref={claimTrigger}
-                    data-claim-trigger
-                    className="rv-claim-prompt"
-                  >
-                    <span>
-                      本单尚未领取，可浏览全部证据；开始判断前请领取。
-                    </span>
-                    <InlineConfirm
-                      title="领取此工单并继续当前操作？"
-                      confirmLabel="领取并继续"
-                      onConfirm={claimAndContinue}
-                      busy={busy}
-                    >
-                      <Button
-                        label="领取并继续"
-                        size="sm"
-                        tooltip="领取后继续本项审核"
-                      />
-                    </InlineConfirm>
-                  </div>
-                )}
                 {selectedPending ? (
                   <div className="rv-conclusion-content">
+                    {canClaim && (
+                      <div data-claim-trigger className="rv-claim-prompt">
+                        <span>尚未领取</span>
+                        <Button
+                          label="领取并继续"
+                          size="sm"
+                          variant="secondary"
+                          isLoading={busy}
+                          onClick={() => requestClaim()}
+                        />
+                      </div>
+                    )}
                     {selected.checkType === "SCREENING_WATCHLIST" ? (
                       <div className="rv-derived-conclusion" aria-live="polite">
                         <strong>
                           本项结论：
-                          {
-                            options.find(
-                              (option) => option.value === watchConclusion,
-                            )?.label
-                          }
+                          {watchComplete
+                            ? options.find(
+                                (option) => option.value === watchConclusion,
+                              )?.label
+                            : `未完成 ${watchDoneCount}/${watchHits.length}`}
                         </strong>
                         <span className="secondary">
-                          由各命中处置自动合成；
                           {watchComplete
                             ? "全部命中已处置"
-                            : "请完成全部命中的结论和原因"}
+                            : "请完成各命中的结论和原因"}
                         </span>
                       </div>
                     ) : (
@@ -1271,6 +1303,7 @@ export default function ReviewPage() {
                         className="rv-conclusion-choices"
                         role="group"
                         aria-label="本项结论"
+                        aria-live="polite"
                       >
                         <strong>本项结论</strong>
                         <div className="row">
@@ -1285,10 +1318,16 @@ export default function ReviewPage() {
                             return (
                               <Button
                                 key={option.value}
-                                label={option.label}
+                                label={`${conclusion === option.value && DECLINE_CONCLUSIONS[option.value] ? "已选 · " : ""}${option.label}`}
                                 size="sm"
+                                className={
+                                  DECLINE_CONCLUSIONS[option.value]
+                                    ? `rv-danger-choice ${conclusion === option.value ? "is-selected-danger" : ""}`
+                                    : undefined
+                                }
                                 variant={
-                                  conclusion === option.value
+                                  conclusion === option.value &&
+                                  !DECLINE_CONCLUSIONS[option.value]
                                     ? "primary"
                                     : "secondary"
                                 }
@@ -1351,8 +1390,17 @@ export default function ReviewPage() {
                         </div>
                       )}
                       <Button
-                        label="提交本项"
+                        label={
+                          DECLINE_CONCLUSIONS[conclusion]
+                            ? "提交拒绝结论"
+                            : "提交本项"
+                        }
                         variant="primary"
+                        className={
+                          DECLINE_CONCLUSIONS[conclusion]
+                            ? "rv-danger-choice is-selected-danger"
+                            : undefined
+                        }
                         tooltip={
                           readOnlyReason ||
                           (needsEscalation
@@ -1398,7 +1446,7 @@ export default function ReviewPage() {
                         }
                         onClick={() => setNotesOpen(!notesOpen)}
                       />
-                      {readOnlyReason && (
+                      {readOnlyReason && !canClaim && (
                         <span className="secondary">{readOnlyReason}</span>
                       )}
                     </div>
@@ -1438,7 +1486,13 @@ export default function ReviewPage() {
                 ) : (
                   <div className="rv-conclusion-content">
                     <div className="row">
-                      <Badge tone="success">
+                      <Badge
+                        tone={
+                          DECLINE_CONCLUSIONS[selected.conclusion ?? ""]
+                            ? "danger"
+                            : "success"
+                        }
+                      >
                         {options.find(
                           (option) => option.value === selected.conclusion,
                         )?.label ??
@@ -1461,8 +1515,8 @@ export default function ReviewPage() {
                             title: "重新审核本项",
                             description:
                               "当前检查项回到待处理，原结论和证据快照保留。",
-                            merchant: "审核中。",
-                            sales: "审核中。",
+                            merchant: "审核中",
+                            sales: "审核中",
                             reversible: "重新提交后产生新的结论记录。",
                             label: "确认重新审核",
                             reason: true,
@@ -1491,7 +1545,7 @@ export default function ReviewPage() {
                       商户看到：
                       {suggested === "DECLINED"
                         ? "未通过，使用通用文案，不披露内部原因。"
-                        : "审核中。"}
+                        : "审核中"}
                     </span>
                     <span className="secondary">
                       下一步：
@@ -1510,354 +1564,365 @@ export default function ReviewPage() {
               </section>
             )}
           </section>
-          {referenceOpen && (
-            <aside
-              className="rv-reference"
+          <aside
+            className="rv-reference"
+            id="review-reference"
+            aria-label="参考信息"
+            hidden={!referenceOpen}
+          >
+            <div className="rv-reference-heading">
+              <h2>申请与记录</h2>
+              <Button
+                label="收起参考"
+                variant="ghost"
+                size="sm"
+                onClick={() => setReferenceOpen(false)}
+              />
+            </div>
+            <DetailTabs
               id="review-reference"
-              aria-label="参考信息"
-            >
-              <div className="rv-reference-close">
-                <Button
-                  label="收起参考"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setReferenceOpen(false)}
-                />
-              </div>
-              <TabList
-                role="tablist"
-                aria-label="参考信息分类"
-                value={referenceTab}
-                onChange={setReferenceTab}
-                size="md"
-                hasDivider
-                overflow="auto"
+              label="参考信息分类"
+              value={referenceTab}
+              onChange={setReferenceTab}
+              items={referenceTabs}
+              compact
+            />
+            <div className="rv-reference-content">
+              <DetailSection
+                id="review-reference"
+                value="application"
+                active={referenceTab}
               >
-                {referenceTabs.map((tab) => (
-                  <Tab
-                    key={tab.key}
-                    id={`review-tab-${tab.key}`}
-                    value={tab.key}
-                    label={tab.label}
-                    panelId={`review-panel-${tab.key}`}
-                  />
-                ))}
-              </TabList>
-              <div
-                className="rv-reference-content"
-                id={`review-panel-${referenceTab}`}
-                role="tabpanel"
-                aria-labelledby={`review-tab-${referenceTab}`}
-                tabIndex={0}
+                <h3 className="section-title">申请信息</h3>
+                <div className="stack">
+                  <dl className="details-grid rv-details">
+                    <div>
+                      <dt>申请号</dt>
+                      <dd>
+                        <Link to={`/applications/${data.application.id}`}>
+                          <IdText value={data.application.id} />
+                        </Link>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>法定名称</dt>
+                      <dd>{data.merchant.legalName}</dd>
+                    </div>
+                    <div>
+                      <dt>注册地</dt>
+                      <dd>{countryName(data.merchant.country)}</dd>
+                    </div>
+                    <div>
+                      <dt>注册号</dt>
+                      <dd>
+                        <IdText value={data.merchant.registrationNo} />
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>登记机构</dt>
+                      <dd>{data.merchant.registrationAuthority}</dd>
+                    </div>
+                    <div>
+                      <dt>申报 MCC</dt>
+                      <dd>{mccName(data.merchant.declaredMcc)}</dd>
+                    </div>
+                    <div>
+                      <dt>月交易额</dt>
+                      <dd>{money(data.merchant.expectedMonthlyVolume)}</dd>
+                    </div>
+                    <div>
+                      <dt>业务模式</dt>
+                      <dd>{data.merchant.businessModel}</dd>
+                    </div>
+                    <div>
+                      <dt>网站</dt>
+                      <dd>{data.merchant.website}</dd>
+                    </div>
+                    <div>
+                      <dt>销售负责人</dt>
+                      <dd>
+                        <PersonName user={data.application.salesOwner} />
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>提交时间</dt>
+                      <dd>{dateTime(data.application.createdAt)}</dd>
+                    </div>
+                  </dl>
+                  {personaSources.map((source) => (
+                    <Button
+                      key={source.id}
+                      label="在 Persona 中打开"
+                      width="100%"
+                      isDisabled={busy || stale}
+                      onClick={async () => {
+                        const tab = window.open("", "_blank");
+                        if (tab) tab.opener = null;
+                        const result = await act("persona", {
+                          evidenceId: source.id,
+                        });
+                        const url = result?.evidence?.find(
+                          (value) => value.id === source.id,
+                        )?.fields.sourceUrl;
+                        if (
+                          result &&
+                          typeof url === "string" &&
+                          /^https:\/\//i.test(url)
+                        ) {
+                          if (tab) tab.location.href = url;
+                        } else tab?.close();
+                      }}
+                    />
+                  ))}
+                </div>
+              </DetailSection>
+              <DetailSection
+                id="review-reference"
+                value="people"
+                active={referenceTab}
               >
-                {referenceTab === "application" && (
-                  <div className="stack">
-                    <dl className="details-grid rv-details">
-                      <div>
-                        <dt>申请号</dt>
-                        <dd>
-                          <Link to={`/applications/${data.application.id}`}>
-                            <IdText value={data.application.id} />
-                          </Link>
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>法定名称</dt>
-                        <dd>{data.merchant.legalName}</dd>
-                      </div>
-                      <div>
-                        <dt>注册地</dt>
-                        <dd>{countryName(data.merchant.country)}</dd>
-                      </div>
-                      <div>
-                        <dt>注册号</dt>
-                        <dd>
-                          <IdText value={data.merchant.registrationNo} />
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>登记机构</dt>
-                        <dd>{data.merchant.registrationAuthority}</dd>
-                      </div>
-                      <div>
-                        <dt>申报 MCC</dt>
-                        <dd>{mccName(data.merchant.declaredMcc)}</dd>
-                      </div>
-                      <div>
-                        <dt>月交易额</dt>
-                        <dd>{money(data.merchant.expectedMonthlyVolume)}</dd>
-                      </div>
-                      <div>
-                        <dt>业务模式</dt>
-                        <dd>{data.merchant.businessModel}</dd>
-                      </div>
-                      <div>
-                        <dt>网站</dt>
-                        <dd>{data.merchant.website}</dd>
-                      </div>
-                      <div>
-                        <dt>销售负责人</dt>
-                        <dd>
-                          <PersonName user={data.application.salesOwner} />
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>提交时间</dt>
-                        <dd>{dateTime(data.application.createdAt)}</dd>
-                      </div>
-                    </dl>
-                    {personaSources.map((source) => (
-                      <Button
-                        key={source.id}
-                        label="在 Persona 中打开"
-                        width="100%"
-                        isDisabled={busy || stale}
-                        onClick={async () => {
-                          const tab = window.open("", "_blank");
-                          if (tab) tab.opener = null;
-                          const result = await act("persona", {
-                            evidenceId: source.id,
-                          });
-                          const url = result?.evidence?.find(
-                            (value) => value.id === source.id,
-                          )?.fields.sourceUrl;
-                          if (
-                            result &&
-                            typeof url === "string" &&
-                            /^https:\/\//i.test(url)
-                          ) {
-                            if (tab) tab.location.href = url;
-                          } else tab?.close();
-                        }}
-                      />
+                <h3 className="section-title">关联人员</h3>
+                {data.people?.length ? (
+                  <ul className="rv-list">
+                    {data.people.map((person, index) => (
+                      <li key={index}>
+                        <div className="row">
+                          <strong>{person.name}</strong>
+                          {!person.declared && (
+                            <Badge tone="warning">未申报</Badge>
+                          )}
+                        </div>
+                        <div>
+                          {person.role} ·{" "}
+                          {person.ownershipPct == null ||
+                          person.ownershipPct === 0
+                            ? "—"
+                            : `${person.ownershipPct.toFixed(1)}%`}
+                        </div>
+                        <span className="secondary">
+                          {person.needsReverify
+                            ? "待重新验证"
+                            : verificationStatus(person.kycStatus)}
+                        </span>
+                      </li>
                     ))}
-                  </div>
+                  </ul>
+                ) : (
+                  <Empty title="暂无关联人员" />
                 )}
-                {referenceTab === "people" &&
-                  (data.people?.length ? (
-                    <ul className="rv-list">
-                      {data.people.map((person, index) => (
-                        <li key={index}>
-                          <div className="row">
-                            <strong>{person.name}</strong>
-                            {!person.declared && (
-                              <Badge tone="warning">未申报</Badge>
-                            )}
+              </DetailSection>
+              <DetailSection
+                id="review-reference"
+                value="supplements"
+                active={referenceTab}
+              >
+                <h3 className="section-title">补件进度</h3>
+                {data.supplements?.length ? (
+                  <div className="stack">
+                    {data.supplements.map((supplement) => (
+                      <Card
+                        key={supplement.id}
+                        padding={3}
+                        className="rv-reference-card"
+                      >
+                        <div className="spread">
+                          <IdText value={supplement.id} />
+                          <StatusBadge status={supplement.status} />
+                        </div>
+                        <dl className="details-grid rv-details">
+                          <div>
+                            <dt>处理人</dt>
+                            <dd>
+                              <PersonName user={supplement.assignee} />
+                            </dd>
                           </div>
                           <div>
-                            {person.role} ·{" "}
-                            {person.ownershipPct == null ||
-                            person.ownershipPct === 0
-                              ? "—"
-                              : `${person.ownershipPct.toFixed(1)}%`}
+                            <dt>发送时间</dt>
+                            <dd>{dateTime(supplement.sentAt)}</dd>
+                          </div>
+                          <div>
+                            <dt>截止时间</dt>
+                            <dd>
+                              {deadlineDate(
+                                supplement.dueAt,
+                                data.merchant.country,
+                              )}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>商户回复</dt>
+                            <dd>
+                              {supplement.items?.some(
+                                (item) => item.status === "PROVIDED",
+                              )
+                                ? "已回复"
+                                : "未回复"}
+                            </dd>
+                          </div>
+                        </dl>
+                        <ul className="rv-list">
+                          {(supplement.items ?? []).map((item, index) => (
+                            <li key={index}>
+                              <div>{item.externalText.zh}</div>
+                              <div className="row">
+                                <Badge>
+                                  {
+                                    (
+                                      {
+                                        PENDING: "待发送",
+                                        SENT: "等待回复",
+                                        PROVIDED: "已补交",
+                                        REJECTED: "不合格",
+                                        MISSING: "未提供",
+                                      } as Record<string, string>
+                                    )[item.status]
+                                  }
+                                </Badge>
+                                {item.checked && (
+                                  <Badge tone="success">齐套检查可用</Badge>
+                                )}
+                              </div>
+                              {item.rejectReason && (
+                                <span className="rv-danger">
+                                  {item.rejectReason}
+                                </span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                        <h3 className="section-title">沟通记录摘要</h3>
+                        {supplement.contactLog?.length ? (
+                          <ul className="rv-list">
+                            {supplement.contactLog.map((log, index) => (
+                              <li key={index}>
+                                {log.summary}
+                                <div className="secondary">
+                                  <PersonName user={log.by} /> ·{" "}
+                                  {dateTime(log.at)}
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <Empty title="暂无沟通记录" />
+                        )}
+                      </Card>
+                    ))}
+                  </div>
+                ) : (
+                  <Empty title="暂无补件需求" />
+                )}
+              </DetailSection>
+              <DetailSection
+                id="review-reference"
+                value="history"
+                active={referenceTab}
+              >
+                <h3 className="section-title">历史工单</h3>
+                <LoadState
+                  loading={history.loading}
+                  error={history.error}
+                  retry={history.reload}
+                >
+                  {history.data?.workOrders?.length ? (
+                    <ul className="rv-list">
+                      {history.data.workOrders.map((other) => (
+                        <li key={other.id}>
+                          <Link to={orderPath(other)}>
+                            <IdText value={other.id} />
+                          </Link>
+                          <div className="row">
+                            <StatusBadge status={other.status} />
+                            <PersonName user={other.assignee} />
                           </div>
                           <span className="secondary">
-                            {person.needsReverify
-                              ? "待重新验证"
-                              : verificationStatus(person.kycStatus)}
+                            {dateTime(other.createdAt)}
                           </span>
                         </li>
                       ))}
                     </ul>
                   ) : (
-                    <Empty title="暂无关联人员" />
-                  ))}
-                {referenceTab === "supplements" &&
-                  (data.supplements?.length ? (
-                    <div className="stack">
-                      {data.supplements.map((supplement) => (
-                        <Card
-                          key={supplement.id}
-                          padding={3}
-                          className="rv-reference-card"
-                        >
-                          <div className="spread">
-                            <IdText value={supplement.id} />
-                            <StatusBadge status={supplement.status} />
-                          </div>
-                          <dl className="details-grid rv-details">
-                            <div>
-                              <dt>处理人</dt>
-                              <dd>
-                                <PersonName user={supplement.assignee} />
-                              </dd>
-                            </div>
-                            <div>
-                              <dt>发送时间</dt>
-                              <dd>{dateTime(supplement.sentAt)}</dd>
-                            </div>
-                            <div>
-                              <dt>截止时间</dt>
-                              <dd>
-                                {deadlineDate(
-                                  supplement.dueAt,
-                                  data.merchant.country,
-                                )}
-                              </dd>
-                            </div>
-                            <div>
-                              <dt>商户回复</dt>
-                              <dd>
-                                {supplement.items?.some(
-                                  (item) => item.status === "PROVIDED",
-                                )
-                                  ? "已回复"
-                                  : "未回复"}
-                              </dd>
-                            </div>
-                          </dl>
-                          <ul className="rv-list">
-                            {(supplement.items ?? []).map((item, index) => (
-                              <li key={index}>
-                                <div>{item.externalText}</div>
-                                <div className="row">
-                                  <Badge>
-                                    {
-                                      (
-                                        {
-                                          PENDING: "待发送",
-                                          SENT: "等待回复",
-                                          PROVIDED: "已补交",
-                                          REJECTED: "不合格",
-                                          MISSING: "未提供",
-                                        } as Record<string, string>
-                                      )[item.status]
-                                    }
-                                  </Badge>
-                                  {item.checked && (
-                                    <Badge tone="success">齐套检查可用</Badge>
-                                  )}
-                                </div>
-                                {item.rejectReason && (
-                                  <span className="rv-danger">
-                                    {item.rejectReason}
-                                  </span>
-                                )}
-                              </li>
-                            ))}
-                          </ul>
-                          <h3 className="section-title">沟通记录摘要</h3>
-                          {supplement.contactLog?.length ? (
-                            <ul className="rv-list">
-                              {supplement.contactLog.map((log, index) => (
-                                <li key={index}>
-                                  {log.summary}
-                                  <div className="secondary">
-                                    <PersonName user={log.by} /> ·{" "}
-                                    {dateTime(log.at)}
-                                  </div>
-                                </li>
-                              ))}
-                            </ul>
-                          ) : (
-                            <Empty title="暂无沟通记录" />
-                          )}
-                        </Card>
-                      ))}
+                    <Empty title="暂无历史工单" />
+                  )}
+                </LoadState>
+              </DetailSection>
+              <DetailSection
+                id="review-reference"
+                value="logs"
+                active={referenceTab}
+              >
+                <h3 className="section-title">操作日志与证据快照</h3>
+                <div className="stack">
+                  {reviewer && owner && (
+                    <div className="rv-comment">
+                      <TextArea
+                        label="合规内部备注"
+                        value={comment}
+                        onChange={updateComment}
+                        rows={3}
+                        maxLength={2000}
+                      />
+                      <Button
+                        label="添加备注"
+                        isDisabled={!comment.trim() || busy || stale}
+                        tooltip={
+                          stale
+                            ? "刷新工单后可用"
+                            : busy
+                              ? "正在保存，请稍候"
+                              : !comment.trim()
+                                ? "填写备注后可用"
+                                : "保存内部备注，5 秒内可撤销"
+                        }
+                        onClick={async () => {
+                          if (await act("note", { note: comment.trim() }))
+                            updateComment("");
+                        }}
+                      />
                     </div>
-                  ) : (
-                    <Empty title="暂无补件需求" />
-                  ))}
-                {referenceTab === "history" && (
-                  <LoadState
-                    loading={history.loading}
-                    error={history.error}
-                    retry={history.reload}
-                  >
-                    {history.data?.workOrders?.length ? (
-                      <ul className="rv-list">
-                        {history.data.workOrders.map((other) => (
-                          <li key={other.id}>
-                            <Link to={orderPath(other)}>
-                              <IdText value={other.id} />
-                            </Link>
-                            <div className="row">
-                              <StatusBadge status={other.status} />
-                              <PersonName user={other.assignee} />
-                            </div>
-                            <span className="secondary">
-                              {dateTime(other.createdAt)}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <Empty title="暂无历史工单" />
-                    )}
-                  </LoadState>
-                )}
-                {referenceTab === "logs" && (
-                  <div className="stack">
-                    {reviewer && owner && (
-                      <div className="rv-comment">
-                        <TextArea
-                          label="合规内部备注"
-                          value={comment}
-                          onChange={updateComment}
-                          rows={3}
-                          maxLength={2000}
-                        />
-                        <Button
-                          label="添加备注"
-                          isDisabled={!comment.trim() || busy || stale}
-                          tooltip={
-                            stale
-                              ? "刷新工单后可用"
-                              : busy
-                                ? "正在保存，请稍候"
-                                : !comment.trim()
-                                  ? "填写备注后可用"
-                                  : "保存内部备注，5 秒内可撤销"
-                          }
-                          onClick={async () => {
-                            if (await act("note", { note: comment.trim() }))
-                              updateComment("");
-                          }}
-                        />
-                      </div>
-                    )}
-                    <Timeline audit={data.audit ?? []} />
-                    <ul className="rv-list">
-                      {(data.audit ?? [])
-                        .filter((log) => log.snapshotId)
-                        .map((log, index) => (
-                          <li key={index}>
-                            <Button
-                              label={`查看证据快照 ${log.snapshotId}`}
-                              variant="ghost"
-                              size="sm"
-                              isLoading={snapshotLoading}
-                              onClick={async () => {
-                                setSnapshotLoading(true);
-                                try {
-                                  setSnapshot(
-                                    await api.snapshot(log.snapshotId, session),
-                                  );
-                                } catch (failure) {
-                                  notice(
-                                    failure instanceof Error
-                                      ? failure.message
-                                      : "证据快照加载失败",
-                                  );
-                                } finally {
-                                  setSnapshotLoading(false);
-                                }
-                              }}
-                            >
-                              查看证据快照 <IdText value={log.snapshotId} />
-                            </Button>
-                          </li>
-                        ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            </aside>
-          )}
+                  )}
+                  <Timeline audit={data.audit ?? []} />
+                  <ul className="rv-list">
+                    {(data.audit ?? [])
+                      .filter((log) => log.snapshotId)
+                      .map((log, index) => (
+                        <li key={index}>
+                          <Button
+                            label={`查看证据快照 ${log.snapshotId}`}
+                            variant="ghost"
+                            size="sm"
+                            isLoading={snapshotLoading}
+                            onClick={async () => {
+                              setSnapshotLoading(true);
+                              try {
+                                setSnapshot(
+                                  await api.snapshot(log.snapshotId, session),
+                                );
+                              } catch (failure) {
+                                notice(
+                                  failure instanceof Error
+                                    ? failure.message
+                                    : "证据快照加载失败",
+                                );
+                              } finally {
+                                setSnapshotLoading(false);
+                              }
+                            }}
+                          >
+                            查看证据快照 <IdText value={log.snapshotId} />
+                          </Button>
+                        </li>
+                      ))}
+                  </ul>
+                </div>
+              </DetailSection>
+            </div>
+          </aside>
         </div>
       )}
       <SupplementNeedsDialog
         data={data}
+        currentCheckItemId={selected?.id}
         open={supplementOpen}
         busy={busy}
         onClose={() => setSupplementOpen(false)}
@@ -1868,24 +1933,36 @@ export default function ReviewPage() {
       <Confirm
         open={!!preview}
         title={preview?.title ?? ""}
-        description={preview?.description ?? ""}
+        description={
+          preview?.finalize
+            ? outcome === "APPROVED"
+              ? "审核通过，关闭审核工单并进入渠道进件。"
+              : outcome === "DECLINED"
+                ? `拒绝申请并终止进件，关闭审核工单。${checks.some((item) => item.conclusion === "FRAUD_DECLINE") ? "欺诈拒绝将写入内部黑名单。" : ""}`
+                : "生成审批工单，由审批人按授权处置；审核工单进入待审批。"
+            : (preview?.description ?? "")
+        }
         merchant={
           preview?.finalize
             ? outcome === "DECLINED"
               ? "未通过，使用通用文案。"
-              : "审核中。"
+              : "审核中"
             : preview?.merchant
         }
         sales={
           preview?.finalize
             ? outcome === "DECLINED"
               ? "未通过，仅展示允许披露的对外类别。"
-              : "审核中。"
+              : "审核中"
             : preview?.sales
         }
         reversible={preview?.reversible}
-        confirmLabel={preview?.label ?? "确认"}
-        danger={preview?.danger}
+        confirmLabel={
+          preview?.finalize
+            ? `确认${resultNames[outcome]}`
+            : (preview?.label ?? "确认")
+        }
+        danger={preview?.finalize ? outcome === "DECLINED" : preview?.danger}
         busy={busy}
         confirmDisabled={
           (!!preview?.reason ||
@@ -1894,6 +1971,11 @@ export default function ReviewPage() {
         }
         onClose={() => setPreview(null)}
         onConfirm={async () => {
+          if (
+            (preview?.reason || (preview?.finalize && outcome !== suggested)) &&
+            !previewReason.trim()
+          )
+            return;
           if (preview && (await preview.execute(previewReason.trim(), outcome)))
             setPreview(null);
         }}
@@ -1906,6 +1988,9 @@ export default function ReviewPage() {
                   key={value}
                   value={value}
                   label={label}
+                  className={
+                    value === "DECLINED" ? "rv-danger-choice" : undefined
+                  }
                   isDisabled={
                     (value === "APPROVED" &&
                       (missingEvidence.length > 0 ||
@@ -1916,39 +2001,16 @@ export default function ReviewPage() {
               ))}
             </RadioList>
           )}
-          {(preview?.reason || (preview?.finalize && outcome !== suggested)) &&
-            (preview?.finalize ? (
-              <div role="group" aria-label="改判原因" className="rv-reasons">
-                <strong>改判原因（必选）</strong>
-                <div className="row">
-                  {[
-                    "补充证据推翻原判断",
-                    "风险已缓释",
-                    "证据支持拒绝",
-                    "需上级授权评估",
-                  ].map((value) => (
-                    <Button
-                      key={value}
-                      label={value}
-                      size="sm"
-                      variant={
-                        previewReason === value ? "primary" : "secondary"
-                      }
-                      aria-pressed={previewReason === value}
-                      onClick={() => setPreviewReason(value)}
-                    />
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <TextArea
-                label="原因"
-                isRequired
-                value={previewReason}
-                onChange={setPreviewReason}
-                rows={3}
-              />
-            ))}
+          {(preview?.reason ||
+            (preview?.finalize && outcome !== suggested)) && (
+            <TextArea
+              label={preview?.finalize ? "偏离系统建议的理由" : "原因"}
+              isRequired
+              value={previewReason}
+              onChange={setPreviewReason}
+              rows={3}
+            />
+          )}
         </div>
       </Confirm>
       <Dialog isOpen={helpOpen} onOpenChange={setHelpOpen} width={480}>
