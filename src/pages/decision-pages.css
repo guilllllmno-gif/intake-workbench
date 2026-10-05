@@ -1,0 +1,127 @@
+.dv-page,
+.dv-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.dv-two-columns,
+.dv-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.dv-two-columns > *,
+.dv-form-grid > * {
+  min-width: 0;
+}
+
+.dv-full {
+  grid-column: 1 / -1;
+}
+
+.dv-reason + .dv-reason,
+.dv-record + .dv-record {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.dv-reason,
+.dv-record {
+  padding-bottom: 12px;
+  overflow-wrap: anywhere;
+}
+
+.dv-reason:last-child,
+.dv-record:last-child {
+  padding-bottom: 0;
+}
+
+.dv-reason > div,
+.dv-reason > p,
+.dv-record > p {
+  margin: 6px 0 0;
+}
+
+.dv-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.dv-notice.dv-warning {
+  border-inline-start: 3px solid var(--warning);
+}
+
+.dv-notice.dv-error {
+  border-inline-start: 3px solid var(--danger);
+}
+
+.dv-stage-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.dv-qa-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 24px;
+}
+
+.dv-checkboxes {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.dv-checkboxes legend {
+  margin-bottom: 12px;
+  padding: 0;
+  font-weight: 600;
+}
+
+.dv-page .details-grid,
+.dv-stack .details-grid {
+  margin-block: 0;
+  overflow-wrap: anywhere;
+}
+
+.dv-page .row,
+.dv-stack .row {
+  flex-wrap: wrap;
+}
+
+.dv-page .dense-table {
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .dv-two-columns,
+  .dv-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.dv-page .dv-clickable {
+  cursor: pointer;
+}
+
+.dv-page .dv-mismatch > td {
+  background: color-mix(in srgb, var(--danger) 5%, var(--surface));
+}

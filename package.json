@@ -1,0 +1,32 @@
+{
+  "name": "intake-workbench",
+  "version": "0.5.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "tsx --test src/*.test.ts"
+  },
+  "dependencies": {
+    "@astryxdesign/core": "^0.6.5",
+    "@astryxdesign/theme-neutral": "^0.6.5",
+    "@stylexjs/stylex": "^0.19.1",
+    "dayjs": "^1.11.19",
+    "lucide-react": "^1.52.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.9.0"
+  },
+  "devDependencies": {
+    "@astryxdesign/cli": "^0.6.5",
+    "@types/node": "^26.6.4",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "latest",
+    "tsx": "latest",
+    "typescript": "~5.9.3",
+    "vite": "^8.0.0"
+  }
+}

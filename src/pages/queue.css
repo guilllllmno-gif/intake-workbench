@@ -1,0 +1,211 @@
+.queue-page {
+  min-width: 0;
+}
+.queue-page > .page-heading {
+  margin-bottom: 8px;
+}
+.queue-surface {
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.queue-tabs {
+  padding: 0 16px;
+}
+.queue-tabs .astryx-tab-list {
+  min-height: 44px;
+}
+.queue-tab-count {
+  display: inline-flex;
+  min-width: 22px;
+  padding: 1px 6px;
+  justify-content: center;
+  border-radius: 5px;
+  background: var(--canvas);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+.queue-tab-count-urgent {
+  color: var(--warning);
+}
+.queue-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 56px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.queue-search {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: 242px;
+  min-width: 200px;
+}
+.queue-search > .astryx-field {
+  flex: 1;
+  min-width: 0;
+}
+.queue-toolbar-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.queue-results {
+  min-width: 0;
+}
+.queue-results .astryx-table {
+  width: 100%;
+  font-size: 13px;
+  table-layout: fixed;
+}
+.queue-results .astryx-table-header-cell {
+  height: 40px;
+  padding: 8px 12px;
+  background: var(--canvas);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.queue-results .astryx-table-cell {
+  height: 40px;
+  padding: 4px 12px;
+  font-size: 13px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.queue-results .astryx-table-header-cell:last-child,
+.queue-results .astryx-table-cell:last-child {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: var(--surface);
+  box-shadow: -1px 0 0 var(--border);
+}
+.queue-results .astryx-table-header-cell:last-child {
+  z-index: 3;
+  background: var(--canvas);
+}
+.queue-check-summary {
+  margin: 0;
+  padding: 0 0 0 16px;
+  max-width: 400px;
+  line-height: 1.7;
+  white-space: normal;
+}
+.queue-results[data-density="balanced"] .astryx-table-cell {
+  height: 48px;
+  padding-block: 8px;
+}
+.queue-results[data-density="spacious"] .astryx-table-cell {
+  height: 56px;
+  padding-block: 12px;
+}
+.queue-results .astryx-table-row[tabindex] {
+  cursor: pointer;
+}
+.queue-results .astryx-table-row[tabindex]:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+.queue-results .astryx-table-cell > span {
+  max-width: 100%;
+}
+.queue-results .merchant-cell {
+  min-width: 0;
+  line-height: 16px;
+}
+.queue-results .merchant-cell > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.queue-results .merchant-display {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  line-height: 14px;
+}
+.queue-results .cell-ellipsis {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.queue-results .astryx-badge {
+  font-size: 11px;
+  line-height: 16px;
+}
+.queue-results .merchant-cell .astryx-badge {
+  flex-shrink: 0;
+  max-width: none;
+}
+.queue-results .astryx-table-cell svg {
+  vertical-align: middle;
+}
+.queue-results .astryx-pagination {
+  padding: 0 16px;
+}
+.queue-summary {
+  padding: 0 16px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.queue-settings {
+  display: grid;
+  gap: 16px;
+  padding-top: 16px;
+}
+.queue-column-options {
+  display: grid;
+  gap: 2px;
+}
+.queue-column-option {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.queue-extension-info {
+  padding: 12px;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  line-height: 1.7;
+}
+@media (max-width: 1100px) {
+  .queue-toolbar {
+    flex-wrap: wrap;
+  }
+  .queue-toolbar-actions {
+    margin-left: 0;
+  }
+  .queue-search {
+    flex: 1;
+    max-width: 320px;
+  }
+}
+@media (max-width: 600px) {
+  .queue-tabs {
+    padding-inline: 8px;
+  }
+  .queue-toolbar {
+    padding: 10px;
+  }
+  .queue-search {
+    flex-basis: 100%;
+    max-width: none;
+  }
+}
