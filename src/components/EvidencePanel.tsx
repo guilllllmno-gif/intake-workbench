@@ -8,12 +8,7 @@ import {
 import { Dialog } from "@astryxdesign/core/Dialog";
 import { RadioList, RadioListItem } from "@astryxdesign/core/RadioList";
 import { Selector } from "@astryxdesign/core/Selector";
-import {
-  Table,
-  pixel,
-  proportional,
-  type TableColumn,
-} from "@astryxdesign/core/Table";
+import { Table, proportional } from "@astryxdesign/core/Table";
 import { TabList, Tab } from "@astryxdesign/core/TabList";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { TreeList, type TreeListItemData } from "@astryxdesign/core/TreeList";
@@ -108,6 +103,12 @@ const text = (value: unknown): string =>
       : String(value);
 const comparable = (value: unknown) =>
   text(value).toLocaleLowerCase().replace(/\s+/g, " ").trim();
+const missing = (value: unknown) =>
+  value == null || value === "" || (Array.isArray(value) && !value.length);
+const rowMatches = (row: Row) =>
+  !missing(row.declared) &&
+  !missing(row.evidence) &&
+  comparable(row.declared) === comparable(row.evidence);
 const tokens = (value: string) =>
   value.match(/[\p{L}\p{N}]+|[^\p{L}\p{N}]+/gu) ?? [];
 function Difference({ value, against }: { value: unknown; against: unknown }) {
@@ -142,94 +143,93 @@ function Comparison({
   fieldLink?: {
     active: string;
     onHighlight: (field: string) => void;
+    onLocate: (field: string) => void;
     register: (field: string, element: HTMLDivElement | null) => void;
   };
 }) {
-  const columns: TableColumn<Row>[] = [
-    {
-      key: "field",
-      header: "字段",
-      width: pixel(100),
-      renderCell: (row) =>
-        fieldLink && row.region ? (
-          <div
-            data-ev-field={row.field}
-            ref={(element) => fieldLink.register(row.field, element)}
-          >
-            <Button
-              label={row.field}
-              size="sm"
-              variant="ghost"
-              aria-label={`定位原图中的${row.field}`}
-              aria-pressed={fieldLink.active === row.field}
-              onClick={() => fieldLink.onHighlight(row.field)}
-            />
-          </div>
-        ) : (
-          row.field
-        ),
-    },
-    {
-      key: "declared",
-      header: left,
-      width: proportional(1),
-      renderCell: (row) => (
-        <span
-          className={matchedFields.includes(row.field) ? "ev-match" : undefined}
-        >
-          <Difference value={row.declared} against={row.evidence} />
-        </span>
-      ),
-    },
-    {
-      key: "evidence",
-      header: right,
-      width: proportional(1),
-      renderCell: (row) =>
-        row.evidence == null || row.evidence === "" ? (
-          <span className="secondary">无记录</span>
-        ) : (
-          <span
-            title={row.source ? `来源：${row.source}` : undefined}
-            tabIndex={row.source ? 0 : undefined}
-            className={
-              matchedFields.includes(row.field) ? "ev-match" : undefined
-            }
-          >
-            <Difference value={row.evidence} against={row.declared} />
-          </span>
-        ),
-    },
-    ...(detail
-      ? [
-          {
-            key: "difference",
-            header: "差异 / 容差",
-            width: proportional(1),
-            renderCell: (row: Row) => (
-              <span>
-                {[row.difference, row.tolerance].filter(Boolean).join(" · ") ||
-                  "—"}
-              </span>
-            ),
-          },
-        ]
-      : [
-          {
-            key: "match",
-            header: "比对",
-            width: pixel(86),
-            renderCell: (row: Row) =>
-              row.declared == null || row.evidence == null ? (
-                <Badge>缺失</Badge>
-              ) : comparable(row.declared) === comparable(row.evidence) ? (
-                <Badge tone="success">一致</Badge>
+  const differences: Row[] = [];
+  const matches: Row[] = [];
+  for (const row of rows) {
+    (rowMatches(row) ? matches : differences).push(row);
+  }
+  const renderRow = (row: Row) => {
+    const declaredMissing = missing(row.declared);
+    const evidenceMissing = missing(row.evidence);
+    const matches = rowMatches(row);
+    const status =
+      declaredMissing && evidenceMissing
+        ? "双方均无记录"
+        : declaredMissing
+          ? `${left}缺失`
+          : evidenceMissing
+            ? `${right}缺失`
+            : matches
+              ? "一致"
+              : "内容不一致";
+    return (
+      <div className="ev-compare-row" data-different={!matches} key={row.field}>
+        <div className="ev-compare-heading">
+          {fieldLink && row.region ? (
+            <div
+              data-ev-field={row.field}
+              ref={(element) => fieldLink.register(row.field, element)}
+            >
+              <Button
+                label={row.field}
+                size="sm"
+                variant="ghost"
+                aria-label={`定位原图中的${row.field}`}
+                aria-pressed={fieldLink.active === row.field}
+                onClick={() => fieldLink.onLocate(row.field)}
+              />
+            </div>
+          ) : (
+            <strong>{row.field}</strong>
+          )}
+          <Badge tone={matches ? "neutral" : "warning"}>{status}</Badge>
+        </div>
+        <dl className="ev-compare-values">
+          <div>
+            <dt>{left}</dt>
+            <dd
+              className={
+                matchedFields.includes(row.field) ? "ev-match" : undefined
+              }
+            >
+              {declaredMissing ? (
+                "无记录"
               ) : (
-                <Badge tone="warning">不一致</Badge>
-              ),
-          },
-        ]),
-  ];
+                <Difference value={row.declared} against={row.evidence} />
+              )}
+            </dd>
+          </div>
+          <div>
+            <dt>{right}</dt>
+            <dd
+              className={
+                matchedFields.includes(row.field) ? "ev-match" : undefined
+              }
+            >
+              {evidenceMissing ? (
+                "无记录"
+              ) : (
+                <Difference value={row.evidence} against={row.declared} />
+              )}
+            </dd>
+          </div>
+        </dl>
+        {detail && (row.difference || row.tolerance) && (
+          <p className="ev-compare-note">
+            {row.difference && <span>差异说明：{row.difference}</span>}
+            {row.tolerance && <span>核对要求：{row.tolerance}</span>}
+          </p>
+        )}
+        {row.source && (
+          <p className="ev-field-source">证据来源：{row.source}</p>
+        )}
+      </div>
+    );
+  };
   return (
     <div
       className="ev-comparison"
@@ -237,7 +237,7 @@ function Comparison({
         fieldLink
           ? (event) => {
               const marker = (event.target as HTMLElement)
-                .closest("tr")
+                .closest(".ev-compare-row")
                 ?.querySelector<HTMLElement>("[data-ev-field]");
               if (marker?.dataset.evField)
                 fieldLink.onHighlight(marker.dataset.evField);
@@ -256,14 +256,25 @@ function Comparison({
           : undefined
       }
     >
-      <Table
-        data={rows}
-        idKey="field"
-        columns={columns}
-        density="compact"
-        dividers="grid"
-        verticalAlign="top"
-      />
+      <div className="ev-block-heading">
+        <h4>字段比对</h4>
+        <p>
+          {left}与{right} · {rows.length} 项字段，{differences.length}{" "}
+          项差异或缺失
+        </p>
+      </div>
+      {!!differences.length && (
+        <div className="ev-compare-list">{differences.map(renderRow)}</div>
+      )}
+      {!!matches.length && (
+        <details className="ev-context-disclosure">
+          <summary>
+            一致字段（{matches.length} 项）<span>展开查看完整比对</span>
+          </summary>
+          <div className="ev-compare-list">{matches.map(renderRow)}</div>
+        </details>
+      )}
+      {!rows.length && <p className="ev-secondary">暂无可比对字段</p>}
     </div>
   );
 }
@@ -414,7 +425,7 @@ function ReasonChoices({
             key={option}
             label={option}
             size="sm"
-            variant={value === option ? "primary" : "secondary"}
+            variant="secondary"
             aria-pressed={value === option}
             isDisabled={disabled}
             onClick={() => onChange(option)}
@@ -715,21 +726,19 @@ function DataMatchViewer({
   const [zoom, setZoom] = useState(100);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const regionRefs = useRef(new Map<string, HTMLButtonElement>());
-  const locatingRow = useRef(false);
-  const highlight = (field: string) => {
+  const locateSource = (field: string) => {
     setActive(field);
-    if (!locatingRow.current)
-      regionRefs.current
-        .get(field)
-        ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    regionRefs.current
+      .get(field)
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   };
   const locate = (field: string) => {
     setActive(field);
     const row = rowRefs.current.get(field);
+    const disclosure = row?.closest("details");
+    if (disclosure) disclosure.open = true;
     row?.scrollIntoView({ block: "nearest", inline: "nearest" });
-    locatingRow.current = true;
     row?.querySelector("button")?.focus({ preventScroll: true });
-    locatingRow.current = false;
   };
   return (
     <div className="ev-linked-viewer">
@@ -742,7 +751,8 @@ function DataMatchViewer({
         detail
         fieldLink={{
           active,
-          onHighlight: highlight,
+          onHighlight: setActive,
+          onLocate: locateSource,
           register: (field, element) => {
             if (element) rowRefs.current.set(field, element);
             else rowRefs.current.delete(field);
@@ -787,7 +797,7 @@ function DataMatchViewer({
               (row.fileId ? row.fileId === file.id : fileIndex === 0),
           );
           return (
-            <Card key={file.id} padding={3} className="ev-linked-file">
+            <div key={file.id} className="ev-linked-file">
               <h4 className="ev-card-title">{file.name}</h4>
               <div className="ev-linked-scroll">
                 <div className="ev-region-canvas" style={{ width: `${zoom}%` }}>
@@ -829,7 +839,7 @@ function DataMatchViewer({
                   {dateTime(file.uploadedAt)}
                 </span>
               </div>
-            </Card>
+            </div>
           );
         })}
       </div>
@@ -883,7 +893,7 @@ function MediaCard({
     (check) => !check.passed && check.mediaId === media.id && check.region,
   );
   return (
-    <Card padding={3} className="ev-media-card">
+    <div className="ev-media-card">
       <h4 className="ev-card-title">{media.label}</h4>
       {shown.url && safeUrl(shown.url) ? (
         <div className="ev-identity-viewport">
@@ -948,7 +958,7 @@ function MediaCard({
           {error}
         </p>
       )}
-    </Card>
+    </div>
   );
 }
 
@@ -1168,6 +1178,7 @@ export default function EvidencePanel({
   draft,
   onDraft,
   onMedia,
+  onReadingChange,
   readOnly = false,
   canDismissStrong,
 }: {
@@ -1176,6 +1187,7 @@ export default function EvidencePanel({
   draft: EvidenceDraft;
   onDraft: (draft: EvidenceDraft) => void;
   onMedia?: (id: string, mediaId: string) => Promise<void>;
+  onReadingChange?: (reading: boolean) => void;
   readOnly?: boolean;
   canDismissStrong?: boolean;
 }) {
@@ -1214,7 +1226,7 @@ export default function EvidencePanel({
               files={fields.documents}
             />
             {registry && (
-              <Card padding={3} className="ev-registry">
+              <section className="ev-registry">
                 <h4 className="ev-card-title">登记摘要</h4>
                 <EvidenceFacts
                   entries={Object.entries(registry).map(([key, value]) => ({
@@ -1225,7 +1237,7 @@ export default function EvidencePanel({
                         : text(value),
                   }))}
                 />
-              </Card>
+              </section>
             )}
           </>
         );
@@ -1356,70 +1368,116 @@ export default function EvidencePanel({
         const names = [
           ...new Set([...declared, ...reported].map((person) => person.name)),
         ];
+        const pairs = names.map((name) => {
+          const applicant = declared.find((value) => value.name === name);
+          const report = reported.find((value) => value.name === name);
+          const differences: string[] = [];
+          if (applicant && report) {
+            if (comparable(applicant.role) !== comparable(report.role))
+              differences.push("身份 / 职务");
+            if (applicant.ownershipPct !== report.ownershipPct)
+              differences.push("持股比例");
+            if (
+              comparable(applicant.startDate) !== comparable(report.startDate)
+            )
+              differences.push("任职开始日期");
+            if (comparable(applicant.endDate) !== comparable(report.endDate))
+              differences.push("任职结束日期");
+          }
+          return { name, applicant, report, differences };
+        });
+        const unmatched = pairs.filter(
+          (pair) => !pair.applicant || !pair.report || pair.differences.length,
+        );
+        const matched = pairs.filter(
+          (pair) => pair.applicant && pair.report && !pair.differences.length,
+        );
         const person = (value?: ReportPerson) =>
           value ? (
             <div className="ev-person">
               <strong>{value.name}</strong>
+              <div>身份 / 职务：{text(value.role)}</div>
               <div>
-                {value.role} ·{" "}
-                {value.ownershipPct == null || value.ownershipPct <= 0
+                持股比例：
+                {value.ownershipPct == null
                   ? "—"
                   : `${value.ownershipPct.toFixed(1)}%`}
               </div>
-              <div>
-                {value.startDate ?? "—"} 至 {value.endDate ?? "在任"}
-              </div>
-              <span className="secondary">来源：{value.source ?? "—"}</span>
+              <div>任职开始：{value.startDate ?? "—"}</div>
+              <div>任职结束：{value.endDate ?? "在任"}</div>
+              <span className="ev-field-source">
+                来源：{value.source ?? "—"}
+              </span>
             </div>
           ) : (
-            <Badge tone="warning">未匹配</Badge>
+            <span className="ev-person-missing">无此人员记录</span>
           );
+        const renderPair = (pair: (typeof pairs)[number]) => {
+          const hasDifference =
+            !pair.applicant || !pair.report || !!pair.differences.length;
+          return (
+            <section
+              className="ev-person-pair"
+              data-different={hasDifference}
+              key={pair.name}
+            >
+              <div className="ev-compare-heading">
+                <strong>{pair.name}</strong>
+                <Badge tone={hasDifference ? "warning" : "neutral"}>
+                  {!pair.applicant
+                    ? "未申报人员"
+                    : !pair.report
+                      ? "报告无记录"
+                      : pair.differences.length
+                        ? "信息不一致"
+                        : "信息一致"}
+                </Badge>
+              </div>
+              {hasDifference && (
+                <p className="ev-person-difference">
+                  {!pair.applicant
+                    ? "报告列有该人员，但申报人员中未找到同名记录。"
+                    : !pair.report
+                      ? "已申报该人员，但报告中未找到同名记录。"
+                      : `${pair.differences.join("、")}与报告不一致，请核对下方原始信息。`}
+                </p>
+              )}
+              <dl className="ev-compare-values">
+                <div>
+                  <dt>申报人员</dt>
+                  <dd>{person(pair.applicant)}</dd>
+                </div>
+                <div>
+                  <dt>报告关联人</dt>
+                  <dd>{person(pair.report)}</dd>
+                </div>
+              </dl>
+            </section>
+          );
+        };
         return (
-          <Table
-            data={names.map((name) => ({
-              name,
-              declared: declared.find((value) => value.name === name),
-              reported: reported.find((value) => value.name === name),
-            }))}
-            idKey="name"
-            density="compact"
-            dividers="grid"
-            verticalAlign="top"
-            columns={[
-              {
-                key: "declared",
-                header: "申报人员",
-                width: proportional(1),
-                renderCell: (row) => (
-                  <div
-                    className={
-                      !row.declared || !row.reported
-                        ? "ev-unmatched"
-                        : undefined
-                    }
-                  >
-                    {person(row.declared)}
-                  </div>
-                ),
-              },
-              {
-                key: "reported",
-                header: "报告关联人",
-                width: proportional(1),
-                renderCell: (row) => (
-                  <div
-                    className={
-                      !row.declared || !row.reported
-                        ? "ev-unmatched"
-                        : undefined
-                    }
-                  >
-                    {person(row.reported)}
-                  </div>
-                ),
-              },
-            ]}
-          />
+          <div className="ev-person-comparison">
+            <div className="ev-block-heading">
+              <h4>关联人员比对</h4>
+              <p>
+                申报 {declared.length} 人 · 报告 {reported.length} 人 ·{" "}
+                {unmatched.length} 人存在差异或缺失
+              </p>
+            </div>
+            {!!unmatched.length && (
+              <div className="ev-compare-list">{unmatched.map(renderPair)}</div>
+            )}
+            {!!matched.length && (
+              <details className="ev-context-disclosure">
+                <summary>
+                  信息一致的人员（{matched.length} 人）
+                  <span>展开查看身份、持股与任职信息</span>
+                </summary>
+                <div className="ev-compare-list">{matched.map(renderPair)}</div>
+              </details>
+            )}
+            {!pairs.length && <p className="ev-secondary">暂无人员比对记录</p>}
+          </div>
         );
       }
       case "CLASSIFICATION":
@@ -1677,6 +1735,7 @@ export default function EvidencePanel({
               <FileUpload
                 value={draft.verificationFiles}
                 onChange={(verificationFiles) => update({ verificationFiles })}
+                onReadingChange={onReadingChange}
                 disabled={readOnly}
               />
             </div>

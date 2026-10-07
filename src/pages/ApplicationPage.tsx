@@ -24,7 +24,6 @@ import {
 import {
   ArrowLeft,
   ArrowRight,
-  Building2,
   Check,
   RotateCcw,
   RotateCw,
@@ -239,6 +238,7 @@ function DetailTable<T extends { id: string }>({
     >
       <Table<Row>
         aria-label={title}
+        className={`density-${density}`}
         data={
           rows.slice(
             (currentPage - 1) * pageSize,
@@ -510,23 +510,18 @@ export default function ApplicationPage() {
       <LoadState loading={loading} error={error} retry={reload}>
         {data && application && merchant && (
           <>
-            <Panel className="application-hero">
+            <Panel>
               <div className="application-identity">
-                <div className="application-identity-main">
-                  <div className="application-emblem" aria-hidden="true">
-                    <Building2 size={24} />
+                <div className="application-identity-copy">
+                  <div className="application-kicker">
+                    <span>申请详情</span>
+                    <IdText value={application.id} />
+                    {tradingName && <span>{tradingName}</span>}
+                    {application.isKeyMerchant && <span>重点商户</span>}
                   </div>
-                  <div className="application-identity-copy">
-                    <div className="application-kicker">
-                      <span>申请详情</span>
-                      <IdText value={application.id} />
-                      {tradingName && <span>{tradingName}</span>}
-                    </div>
-                    <div className="application-name-row">
-                      <h1>{merchant.legalName}</h1>
-                      <Badge>{application.externalStatus}</Badge>
-                      {application.isKeyMerchant && <Badge>重点商户</Badge>}
-                    </div>
+                  <div className="application-name-row">
+                    <h1>{merchant.legalName}</h1>
+                    <Badge>{application.externalStatus}</Badge>
                   </div>
                 </div>
                 <div className="row application-header-actions">
@@ -569,7 +564,9 @@ export default function ApplicationPage() {
                           onClick={() => openAction("review-request")}
                           disabled={!canReview || stale}
                           icon={<RotateCcw />}
-                          variant="primary"
+                          variant={
+                            canReview && !stale ? "primary" : "secondary"
+                          }
                         >
                           发起复核
                         </Btn>
@@ -1277,10 +1274,8 @@ export default function ApplicationPage() {
                 <Panel title="当前处理" className="application-current">
                   <div className="application-current-heading">
                     <strong>{stages[current]?.title ?? "申请进度"}</strong>
-                    {currentOrder ? (
+                    {currentOrder && (
                       <StatusBadge status={currentOrder.status} />
-                    ) : (
-                      <Badge>{application.externalStatus}</Badge>
                     )}
                   </div>
                   {currentOrder ? (
@@ -1329,48 +1324,43 @@ export default function ApplicationPage() {
                 </Panel>
                 <Panel title="快速查看" className="application-shortcuts">
                   {risk && checks.length > 0 && (
-                    <button
-                      type="button"
+                    <Btn
+                      variant="ghost"
                       className="application-shortcut"
+                      icon={<ArrowRight size={16} />}
                       onClick={() => changeTab("materials", "pending")}
                     >
-                      <span>待处理检查项</span>
-                      <strong>{pendingChecks.length}</strong>
-                      <ArrowRight size={16} aria-hidden="true" />
-                    </button>
+                      待处理检查项 · {pendingChecks.length}
+                    </Btn>
                   )}
                   {supplements.length > 0 && (
-                    <button
-                      type="button"
+                    <Btn
+                      variant="ghost"
                       className="application-shortcut"
+                      icon={<ArrowRight size={16} />}
                       onClick={() => changeTab("materials")}
                     >
-                      <span>待补充资料</span>
-                      <strong>{outstandingMaterials}</strong>
-                      <ArrowRight size={16} aria-hidden="true" />
-                    </button>
+                      待补充资料 · {outstandingMaterials}
+                    </Btn>
                   )}
-                  <button
-                    type="button"
+                  <Btn
+                    variant="ghost"
                     className="application-shortcut"
+                    icon={<ArrowRight size={16} />}
                     onClick={() => changeTab("people")}
                   >
-                    <span>人员与联系</span>
-                    <strong>
-                      {data.people?.length || merchant.contacts?.length || 0}
-                    </strong>
-                    <ArrowRight size={16} aria-hidden="true" />
-                  </button>
+                    人员与联系 ·{" "}
+                    {data.people?.length || merchant.contacts?.length || 0}
+                  </Btn>
                   {internal && (
-                    <button
-                      type="button"
+                    <Btn
+                      variant="ghost"
                       className="application-shortcut"
+                      icon={<ArrowRight size={16} />}
                       onClick={() => changeTab("activity")}
                     >
-                      <span>相关工单</span>
-                      <strong>{orders.length}</strong>
-                      <ArrowRight size={16} aria-hidden="true" />
-                    </button>
+                      相关工单 · {orders.length}
+                    </Btn>
                   )}
                 </Panel>
               </aside>

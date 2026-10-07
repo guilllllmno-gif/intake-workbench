@@ -1355,6 +1355,21 @@ test("registered correspondence language and selected contact control bilingual 
     assert.ok(!preview.salutation.includes(merchantRecord.legalName));
     assert.ok(preview.body.includes(workOrder.items![0].externalText.zh));
     assert.ok(!preview.body.includes(workOrder.items![0].externalText.en));
+    const portalUrl = new URL(preview.link, "http://localhost");
+    assert.equal(
+      portalUrl.pathname,
+      `/merchant/${encodeURIComponent(workOrder.merchantToken!)}`,
+    );
+    assert.equal(
+      (
+        await api.getOrder(
+          decodeURIComponent(portalUrl.pathname.split("/").at(-1)!),
+          merchant,
+        )
+      ).workOrder.id,
+      workOrder.id,
+      "the notice opens the actual token-scoped merchant route",
+    );
     const portal = await api.getOrder(workOrder.merchantToken!, merchant);
     assert.equal(portal.application.communicationLanguage, preview.language);
   });
@@ -1408,6 +1423,80 @@ test("merchant access accepts issued random tokens and denies predictable or tam
       api.getOrder(token, merchant),
       (error: unknown) => error instanceof ApiError && error.status === 404,
     );
+});
+
+test("terminating the last submitted channel closes the application even when an unused alternative exists", async () => {
+  const store = createSeed();
+  const current = store.orders.find((entry) => entry.id === wo(393))!;
+  current.assignee = USERS.find((entry) => entry.id === lead.userId)!;
+  await withStoredSeed(store, async () => {
+    const before = await api.getOrder(current.id, lead);
+    assert.ok(
+      before.otherChannels?.some((entry) => entry.status === "AVAILABLE"),
+    );
+    const ended = await act(
+      current.id,
+      "channel-terminate",
+      { reason: "商户确认停止渠道进件" },
+      lead,
+    );
+    assert.equal(ended.workOrder.status, "CLOSED");
+    assert.equal(ended.application.externalStatus, "未通过");
+  });
+});
+
+test("terminating one channel preserves an actual in-flight alternative", async () => {
+  const store = createSeed();
+  const current = store.orders.find((entry) => entry.id === wo(393))!;
+  current.assignee = USERS.find((entry) => entry.id === lead.userId)!;
+  const other = store.submissions.find(
+    (entry) =>
+      entry.applicationId === current.applicationId &&
+      entry.status === "AVAILABLE",
+  )!;
+  other.status = "SUBMITTED";
+  await withStoredSeed(store, async () => {
+    const before = await api.getOrder(current.id, lead);
+    const ended = await act(
+      current.id,
+      "channel-terminate",
+      { reason: "仅终止当前渠道，另一渠道继续" },
+      lead,
+    );
+    assert.equal(ended.application.status, before.application.status);
+    assert.equal(
+      ended.application.externalStatus,
+      before.application.externalStatus,
+    );
+    assert.equal(
+      ended.otherChannels?.find((entry) => entry.id === other.id)?.status,
+      "SUBMITTED",
+    );
+  });
+});
+
+test("storage exhaustion rejects a mutation atomically and permits retry after space is restored", async () => {
+  await withStoredSeed(createSeed(), async () => {
+    const before = await api.getOrder(wo(3), reviewer);
+    const save = localStorage.setItem;
+    localStorage.setItem = () => {
+      throw new DOMException("Storage full", "QuotaExceededError");
+    };
+    try {
+      await assert.rejects(
+        () => act(wo(3), "claim", {}, reviewer),
+        (error: unknown) => error instanceof ApiError && error.status === 507,
+      );
+    } finally {
+      localStorage.setItem = save;
+    }
+    const unchanged = await api.getOrder(wo(3), reviewer);
+    assert.deepEqual(unchanged.workOrder, before.workOrder);
+    assert.deepEqual(unchanged.application, before.application);
+    const retried = await act(wo(3), "claim", {}, reviewer);
+    assert.equal(retried.workOrder.status, "IN_PROGRESS");
+    assert.equal(retried.workOrder.assignee?.id, reviewer.userId);
+  });
 });
 
 test("SLA notifications aggregate actionable work and resolve when work waits for the merchant", async () => {

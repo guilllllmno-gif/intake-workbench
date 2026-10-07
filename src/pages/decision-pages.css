@@ -25,7 +25,7 @@
 
 .dv-reason + .dv-reason,
 .dv-record + .dv-record {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-subtle);
   padding-top: 12px;
 }
 
@@ -53,8 +53,8 @@
   gap: 8px;
   padding: 12px 16px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
+  border-radius: var(--radius-inner);
+  background: var(--surface-subtle);
   color: var(--ink);
   line-height: 1.5;
 }
@@ -121,7 +121,8 @@
 }
 
 .dv-source-check {
-  font-size: 14px;
+  color: var(--muted);
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -138,23 +139,27 @@
 }
 
 .dv-disposition.astryx-button.is-selected {
-  outline: 2px solid var(--ink);
-  outline-offset: -2px;
-  background: var(--canvas);
+  outline: 1px solid var(--ink);
+  outline-offset: -1px;
+  color: var(--ink);
+  background: var(--surface-subtle);
 }
 
 .dv-danger-action.astryx-button {
   color: var(--danger);
-  border-color: var(--danger);
 }
 
 .dv-danger-action.astryx-button.is-selected {
   outline-color: var(--danger);
+  color: var(--danger);
   background: color-mix(in srgb, var(--danger) 8%, var(--surface));
 }
 
-.dv-danger-selection,
-.dv-qa-conclusion.dv-danger-selected {
+.dv-disposition.astryx-button:focus-visible {
+  outline-offset: 3px;
+}
+
+.dv-danger-selection {
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 6%, var(--surface));
   border-inline-start: 4px solid var(--danger);
@@ -164,6 +169,7 @@
   margin: 0;
   padding: 8px 12px;
   font-weight: 600;
+  border-radius: var(--radius-inner);
 }
 
 .dv-decision-page .dv-decision-aside {
@@ -183,6 +189,12 @@
   font-size: 12px;
 }
 
+.dv-treatment {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
 .dv-decision-page .dv-approval-actions,
 .dv-decision-page .dv-treatment .dv-dispositions,
 .dv-decision-page .dv-treatment .dv-form-grid {
@@ -195,7 +207,6 @@
 .dv-decision-page .dv-treatment .dv-dispositions > .astryx-button {
   width: 100%;
   min-width: 0;
-  min-height: 40px;
 }
 
 .dv-decision-page .dv-treatment .dv-form-grid {
@@ -206,17 +217,6 @@
   margin: 0;
   font-size: 12px;
   line-height: 1.6;
-}
-
-.dv-decision-page .dv-treatment .row.between {
-  display: grid;
-  gap: 12px;
-}
-
-@media (min-width: 1181px) and (max-height: 1000px) {
-  .dv-decision-page .dv-decision-aside {
-    position: static;
-  }
 }
 
 @media (min-width: 1181px) and (max-width: 1400px) {
@@ -255,7 +255,8 @@
   flex: 1;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-panel);
+  background: var(--surface);
 }
 
 .dv-qa-evidence {
@@ -267,7 +268,7 @@
 
 .dv-qa-evidence > .ui-panel-heading {
   flex: none;
-  padding: 8px 16px;
+  padding: 16px;
 }
 
 .dv-qa-evidence > .ui-panel-content,
@@ -276,7 +277,7 @@
 }
 
 .dv-qa-evidence > .ui-panel-content {
-  padding: 0 16px 8px;
+  padding: 0 16px 16px;
 }
 
 .dv-qa-evidence-content {
@@ -301,7 +302,7 @@
 
 .dv-qa-conclusion.rv-conclusion {
   max-height: none;
-  padding: 8px 16px;
+  padding: 16px;
 }
 
 .dv-qa-conclusion > .rv-conclusion-content,
@@ -319,7 +320,7 @@
 
 .dv-qa-progress {
   white-space: nowrap;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .dv-qa-blind-note {

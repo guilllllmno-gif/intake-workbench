@@ -6,6 +6,7 @@ import { Dialog } from "@astryxdesign/core/Dialog";
 import { InternationalizationProvider } from "@astryxdesign/core/i18n";
 import zhCN from "@astryxdesign/core/locales/zh-CN.generated.js";
 import { ProgressBar } from "@astryxdesign/core/ProgressBar";
+import { Selector } from "@astryxdesign/core/Selector";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { api } from "../api";
@@ -76,14 +77,16 @@ function MerchantPortal({ token }: { token: string }) {
   const [local, setLocal] = useState<OrderDetail | null>(null);
   const [chosenLanguage, setChosenLanguage] = useState<CommunicationLanguage>();
   const [responses, setResponses] = useState<Record<string, Response>>({});
+  const [readingItems, setReadingItems] = useState<Record<string, boolean>>({});
+  const [verificationReading, setVerificationReading] = useState(false);
+  const filesReading =
+    verificationReading || Object.values(readingItems).some(Boolean);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [submitError, setSubmitError] = useState<number | null>(null);
   const [stale, setStale] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [verifyId, setVerifyId] = useState("");
-  const [verifyName, setVerifyName] = useState("");
-  const [verifyFiles, setVerifyFiles] = useState<UploadedFile[]>([]);
   const [verifyConsent, setVerifyConsent] = useState(false);
   const data = local || resource.data;
   const language =
@@ -92,6 +95,7 @@ function MerchantPortal({ token }: { token: string }) {
   const current = useRef(data);
   current.current = data;
   const acting = useRef(false);
+  const loadedRequest = useRef<OrderDetail | null>(null);
   const w = data?.workOrder;
   const items = w?.items || [];
   const actionItems = items.filter(
@@ -100,6 +104,7 @@ function MerchantPortal({ token }: { token: string }) {
   const preserved = items.filter(
     (item) => item.checked && item.status === "PROVIDED",
   );
+  const awaitingNotice = items.some((item) => item.status === "PENDING");
   const expired = !!w?.dueAt && new Date(w.dueAt).getTime() <= now;
   const submitted = w?.status === "TO_CHECK" || w?.status === "DONE";
   const closed =
@@ -117,7 +122,11 @@ function MerchantPortal({ token }: { token: string }) {
           !!item.response,
       );
   const editable =
-    w?.status === "WAITING_MERCHANT" && !expired && !stale && !busy;
+    w?.status === "WAITING_MERCHANT" &&
+    !awaitingNotice &&
+    !expired &&
+    !stale &&
+    !busy;
   const disabledReason = busy
     ? text("正在提交，请稍候", "Submitting, please wait")
     : stale
@@ -130,12 +139,17 @@ function MerchantPortal({ token }: { token: string }) {
             "提交期限已过，请联系支持团队申请延期",
             "The deadline has passed. Contact support to request an extension",
           )
-        : w?.status !== "WAITING_MERCHANT"
+        : awaitingNotice || w?.status !== "WAITING_MERCHANT"
           ? text(
               "请等待正式补交通知",
               "Please wait for the official request before submitting",
             )
-          : "";
+          : filesReading
+            ? text(
+                "正在读取文件，请完成后再提交",
+                "Reading files. Please wait before submitting",
+              )
+            : "";
   const complete = actionItems.filter((item) => {
     const response = responses[item.id];
     return item.actionType === "UPLOAD"
@@ -145,8 +159,13 @@ function MerchantPortal({ token }: { token: string }) {
         : !!response?.value?.trim();
   }).length;
   const ready =
-    editable && actionItems.length > 0 && complete === actionItems.length;
+    editable &&
+    !filesReading &&
+    actionItems.length > 0 &&
+    complete === actionItems.length;
   const verifyItem = actionItems.find((item) => item.id === verifyId);
+  const verifyName = responses[verifyId]?.value || "";
+  const verifyFiles = responses[verifyId]?.files || [];
   const verifyPerson = data?.people?.find(
     (person) => person.id === verifyItem?.targetPersonId,
   );
@@ -159,8 +178,32 @@ function MerchantPortal({ token }: { token: string }) {
     return () => window.clearInterval(timer);
   }, []);
   useEffect(() => {
+    if (!resource.data) return;
+    const latest = resource.data;
+    const previous = loadedRequest.current;
+    loadedRequest.current = latest;
     setLocal(null);
-    setResponses({});
+    setResponses((drafts) =>
+      Object.fromEntries(
+        Object.entries(drafts).filter(([id]) => {
+          const before = previous?.workOrder.items?.find(
+            (item) => item.id === id,
+          );
+          const after = latest.workOrder.items?.find((item) => item.id === id);
+          return (
+            before &&
+            after &&
+            !(after.checked && after.status === "PROVIDED") &&
+            latest.workOrder.status === "WAITING_MERCHANT" &&
+            before.actionType === after.actionType &&
+            before.targetPersonId === after.targetPersonId &&
+            before.field === after.field &&
+            before.externalText.zh === after.externalText.zh &&
+            before.externalText.en === after.externalText.en
+          );
+        }),
+      ),
+    );
     setStale(false);
     setSubmitError(null);
     setConfirmOpen(false);
@@ -217,7 +260,9 @@ function MerchantPortal({ token }: { token: string }) {
         merchantSession,
       );
       setLocal(result);
+      setResponses({});
       setConfirmOpen(false);
+      setView("records");
     } catch (error) {
       const status = (error as Error & { status?: number }).status || 500;
       setSubmitError(status);
@@ -260,18 +305,20 @@ function MerchantPortal({ token }: { token: string }) {
       >
         <header className="merchant-brand-header">
           <strong className="merchant-brand">FuturePay</strong>
-          <label className="merchant-language">
-            <span>{text("语言", "Language")}</span>
-            <select
+          <div className="merchant-language">
+            <Selector
+              label={text("语言", "Language")}
+              isLabelHidden
               value={language}
-              onChange={(event) =>
-                setChosenLanguage(event.target.value as CommunicationLanguage)
+              onChange={(value) =>
+                setChosenLanguage(value as CommunicationLanguage)
               }
-            >
-              <option value="en">English</option>
-              <option value="zh">简体中文</option>
-            </select>
-          </label>
+              options={[
+                { value: "en", label: "English" },
+                { value: "zh", label: "简体中文" },
+              ]}
+            />
+          </div>
         </header>
         {!token ? (
           <Panel
@@ -334,7 +381,9 @@ function MerchantPortal({ token }: { token: string }) {
                           }
                         >
                           {submitted
-                            ? text("已提交", "Submitted")
+                            ? w.status === "DONE"
+                              ? text("补件已完成", "Request completed")
+                              : text("已提交", "Submitted")
                             : closed
                               ? text("已关闭", "Closed")
                               : expired
@@ -342,9 +391,6 @@ function MerchantPortal({ token }: { token: string }) {
                                 : text("待补充资料", "Information requested")}
                         </Badge>
                       </div>
-                      <p className="secondary">
-                        {text("补充资料", "Additional information")}
-                      </p>
                     </div>
                   </div>
                 </div>
@@ -387,6 +433,10 @@ function MerchantPortal({ token }: { token: string }) {
                     "补件要求已更新，请刷新后继续",
                     "The request has changed. Refresh to continue",
                   )}
+                  description={text(
+                    "刷新后，要求未变且仍待补充的项目会保留本次填写内容；已变更或已接收的项目请重新确认。",
+                    "Refreshing keeps your entries for unchanged outstanding items. Review any changed or accepted items.",
+                  )}
                   endContent={
                     <Btn onClick={resource.reload}>
                       {text("刷新", "Refresh")}
@@ -423,14 +473,12 @@ function MerchantPortal({ token }: { token: string }) {
                     active={view}
                   >
                     {submitted ? (
-                      <Banner
-                        status="success"
-                        title={text("已提交，审核中", "Submitted for review")}
-                        description={text(
+                      <p role="status">
+                        {text(
                           "资料已收到，请留意后续通知",
                           "We have received your information. Please look out for further notifications",
                         )}
-                      />
+                      </p>
                     ) : closed ? (
                       <Banner
                         status="info"
@@ -454,14 +502,13 @@ function MerchantPortal({ token }: { token: string }) {
                             )}
                           />
                         )}
-                        {w.status === "TO_SEND" && (
-                          <Banner
-                            status="info"
-                            title={text(
+                        {(w.status === "TO_SEND" || awaitingNotice) && (
+                          <p className="secondary">
+                            {text(
                               "请等待正式补交通知",
                               "Please wait for the official request notification",
                             )}
-                          />
+                          </p>
                         )}
                         <Panel
                           title={text(
@@ -481,16 +528,15 @@ function MerchantPortal({ token }: { token: string }) {
                                 )}
                           </p>
                           <div className="stack merchant-items">
-                            {actionItems.map((item) => (
+                            {actionItems.map((item, index) => (
                               <section key={item.id} className="merchant-item">
-                                <div className="spread">
-                                  <h2 className="section-title">
-                                    {item.externalText[language]}
-                                  </h2>
-                                  <Badge>
-                                    {actionLabels[item.actionType][language]}
-                                  </Badge>
-                                </div>
+                                <h3 className="section-title">
+                                  {index + 1}.{" "}
+                                  {actionLabels[item.actionType][language]}
+                                </h3>
+                                <p className="ops-preserve">
+                                  {item.externalText[language]}
+                                </p>
                                 {item.rejectReason && (
                                   <Banner
                                     status="warning"
@@ -518,6 +564,16 @@ function MerchantPortal({ token }: { token: string }) {
                                   >
                                     <FileUpload
                                       value={responses[item.id]?.files || []}
+                                      onReadingChange={(reading) =>
+                                        setReadingItems((previous) =>
+                                          previous[item.id] === reading
+                                            ? previous
+                                            : {
+                                                ...previous,
+                                                [item.id]: reading,
+                                              },
+                                        )
+                                      }
                                       onChange={(files) =>
                                         update(item.id, { files })
                                       }
@@ -563,30 +619,42 @@ function MerchantPortal({ token }: { token: string }) {
                                         "Identity verification",
                                       )}
                                     </span>
-                                    {responses[item.id]?.reverified ? (
-                                      <Badge tone="success">
-                                        {text(
-                                          "已确认验证资料",
-                                          "Verification information confirmed",
-                                        )}
-                                      </Badge>
-                                    ) : (
-                                      <Btn
-                                        disabled={!editable}
-                                        title={disabledReason || undefined}
-                                        onClick={() => {
-                                          setVerifyId(item.id);
-                                          setVerifyName("");
-                                          setVerifyFiles([]);
-                                          setVerifyConsent(false);
-                                        }}
-                                      >
-                                        {text(
-                                          "重新做个人验证",
-                                          "Verify identity again",
-                                        )}
-                                      </Btn>
+                                    {responses[item.id]?.reverified && (
+                                      <>
+                                        <Badge tone="success">
+                                          {text(
+                                            "已确认验证资料",
+                                            "Verification information confirmed",
+                                          )}
+                                        </Badge>
+                                        <MaterialPreview
+                                          files={responses[item.id]?.files}
+                                          value={responses[item.id]?.value}
+                                          language={language}
+                                          merchant
+                                        />
+                                      </>
                                     )}
+                                    <Btn
+                                      disabled={!editable}
+                                      title={disabledReason || undefined}
+                                      onClick={() => {
+                                        setVerifyId(item.id);
+                                        setVerifyConsent(
+                                          !!responses[item.id]?.reverified,
+                                        );
+                                      }}
+                                    >
+                                      {responses[item.id]?.reverified
+                                        ? text(
+                                            "修改验证资料",
+                                            "Edit verification information",
+                                          )
+                                        : text(
+                                            "重新做个人验证",
+                                            "Verify identity again",
+                                          )}
+                                    </Btn>
                                   </div>
                                 )}
                               </section>
@@ -602,14 +670,12 @@ function MerchantPortal({ token }: { token: string }) {
                     active={view}
                   >
                     {submitted && (
-                      <Banner
-                        status="success"
-                        title={text("已提交，审核中", "Submitted for review")}
-                        description={text(
+                      <p role="status">
+                        {text(
                           "资料已收到，请留意后续通知。您可以在下方查看已提交的内容。",
                           "We have received your information. You can review it below. Please look out for further notifications.",
                         )}
-                      />
+                      </p>
                     )}
                     <Panel title={text("已提供资料", "Provided information")}>
                       <p className="secondary">
@@ -640,9 +706,9 @@ function MerchantPortal({ token }: { token: string }) {
                                     ? text("已提交", "Submitted")
                                     : text("此前提供", "Previously provided")}
                               </Badge>
-                              <h3 className="section-title">
+                              <p className="ops-preserve">
                                 {item.externalText[language]}
-                              </h3>
+                              </p>
                             </div>
                             <MaterialPreview
                               files={item.files}
@@ -741,7 +807,7 @@ function MerchantPortal({ token }: { token: string }) {
                               </Btn>
                             )}
                             <Btn
-                              variant="primary"
+                              variant={ready || busy ? "primary" : "secondary"}
                               busy={busy}
                               disabled={!ready}
                               title={
@@ -787,7 +853,11 @@ function MerchantPortal({ token }: { token: string }) {
                     label={text("本人完整姓名", "Full legal name")}
                     isRequired
                     value={verifyName}
-                    onChange={setVerifyName}
+                    onChange={(value) => {
+                      update(verifyId, { value, reverified: false });
+                      setVerifyConsent(false);
+                    }}
+                    isDisabled={!editable}
                     description={
                       verifyPerson
                         ? text(
@@ -804,20 +874,38 @@ function MerchantPortal({ token }: { token: string }) {
                     )}
                   >
                     <FileUpload
+                      key={verifyId}
+                      onReadingChange={setVerificationReading}
                       value={verifyFiles}
-                      onChange={setVerifyFiles}
+                      onChange={(files) => {
+                        update(verifyId, { files, reverified: false });
+                        setVerifyConsent(false);
+                      }}
+                      disabled={!editable}
                       accept="image/*,.pdf"
                       language={language}
                       session={merchantSession}
                     />
                   </Field>
+                  {verificationReading && (
+                    <p role="status" className="secondary">
+                      {text(
+                        "正在读取验证文件，请完成后再确认",
+                        "Reading verification files. Please wait before confirming",
+                      )}
+                    </p>
+                  )}
                   <CheckboxInput
                     label={text(
                       "本人确认所提交身份与材料真实、有效，并授权进行个人验证",
                       "I confirm that the identity and documents provided are genuine and valid, and authorize identity verification",
                     )}
                     value={verifyConsent}
-                    onChange={setVerifyConsent}
+                    onChange={(value) => {
+                      setVerifyConsent(value);
+                      if (!value) update(verifyId, { reverified: false });
+                    }}
+                    isDisabled={!editable}
                   />
                 </div>
                 <footer className="ops-dialog-footer">
@@ -831,6 +919,7 @@ function MerchantPortal({ token }: { token: string }) {
                       (!!verifyPerson &&
                         verifyName.trim() !== verifyPerson.name) ||
                       !verifyFiles.length ||
+                      verificationReading ||
                       !verifyConsent ||
                       !editable
                     }

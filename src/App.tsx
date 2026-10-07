@@ -219,7 +219,7 @@ function Shell() {
     main?.focus({ preventScroll: true });
     if (!location.pathname.startsWith("/queue/")) main?.scrollTo(0, 0);
   }, [location.pathname]);
-  const changeUser = (id: string) => {
+  const changeUser = (id: string, path?: string) => {
     const user = USERS.find((u) => u.id === id);
     if (!user) return;
     const proceed = () => {
@@ -227,7 +227,7 @@ function Shell() {
       setSession(nextSession);
       setLoggedOut(false);
       setNotificationsOpen(false);
-      navigate(homePath(nextSession.role));
+      navigate(path ?? homePath(nextSession.role));
       notice(`已切换为${ROLE_LABELS[nextSession.role]} · ${nextSession.name}`);
     };
     const event = new CustomEvent("workbench:session-change", {
@@ -713,15 +713,39 @@ function Shell() {
                 label={`${s.key} · ${s.name}`}
                 variant="secondary"
                 onClick={() => {
-                  setSession(
-                    sessionFor(USERS.find((u) => u.roles.includes(s.role))!),
-                  );
                   setGuide(false);
-                  navigate(s.path);
+                  changeUser(
+                    USERS.find((u) => u.roles.includes(s.role))!.id,
+                    s.path,
+                  );
                 }}
               />
             ))}
           </div>
+          <h3>完整操作链路</h3>
+          <p>
+            <strong>S3 · 审核补件：</strong>
+            林予安记录名称项的可接受差异、地址项的补件要求，保存后提交补件需求。
+            切换周以宁，在「我的待办」打开新生成的补件工单并发送通知。
+            通过工单内的商户入口上传、提交资料；回运营页面刷新，检查材料并完成补件。
+            切回林予安查看原审核单结果。不合格材料可先退回补正，再由商户补交。
+          </p>
+          <p>
+            <strong>S4 · 双人审批：</strong>
+            林予安提交审批，切换顾衡提交第一意见，再切换陆珩完成复核。
+            任一人拒绝则最终拒绝；否则保留附条件批准。完成后留在本单查看最终结果与审批记录。
+          </p>
+          <p>
+            <strong>S7 · 渠道补件：</strong>
+            程悦领取渠道单、保存原因映射并发起商户补件；周以宁按 S3
+            的运营流程完成补件。
+            再切回程悦打开原渠道单，修正后重新提交，状态进入「等待渠道回执」。
+          </p>
+          <p className="secondary">
+            商户入口使用通知中的专属链接，在新标签页打开，不需要切换后台账号。
+            所有操作完成后保留当前工单，仅点击「领取下一单」才切换任务。
+            如需重新验收，可用下方「重置数据」恢复初始场景；重置会清除本地操作记录。
+          </p>
         </div>
         <div className="dialog-actions">
           <Button

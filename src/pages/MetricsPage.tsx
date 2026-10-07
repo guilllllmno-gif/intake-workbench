@@ -8,7 +8,7 @@ import { Tooltip } from "@astryxdesign/core/Tooltip";
 import dayjs from "dayjs";
 import { api } from "../api";
 import { useAsync, useSession } from "../hooks";
-import { Badge, Empty, LoadState, PageHeading, Panel } from "../ui";
+import { Empty, LoadState, PageHeading, Panel } from "../ui";
 import "./progress-pages.css";
 
 export default function MetricsPage() {
@@ -58,60 +58,65 @@ export default function MetricsPage() {
     y: chart.top + (1 - point.lossRate! / maxRate) * plotHeight,
   }));
   return (
-    <div className="page stack progress-pages">
-      <PageHeading title="指标看板" />
+    <div className="page stack progress-pages metrics-page">
+      <PageHeading
+        title="指标看板"
+        metadata={
+          allowed && filters.from && filters.to
+            ? `${filters.from} – ${filters.to}`
+            : undefined
+        }
+      />
       {!allowed ? (
         <Banner status="error" title="无权访问指标看板" />
       ) : (
         <>
-          <Panel>
-            <div className="progress-query-form">
-              <DateRangeInput
-                label="统计日期"
-                value={
-                  filters.from && filters.to
-                    ? ({ start: filters.from, end: filters.to } as DateRange)
-                    : null
-                }
-                onChange={(range) =>
-                  setFilters(range ? { from: range.start, to: range.end } : {})
-                }
-                placeholder="全部日期"
-                presets={[
-                  {
-                    label: "最近 7 天",
-                    getRange: () =>
-                      ({
-                        start: dayjs().subtract(6, "day").format("YYYY-MM-DD"),
-                        end: dayjs().format("YYYY-MM-DD"),
-                      }) as DateRange,
-                  },
-                  {
-                    label: "最近 30 天",
-                    getRange: () =>
-                      ({
-                        start: dayjs().subtract(29, "day").format("YYYY-MM-DD"),
-                        end: dayjs().format("YYYY-MM-DD"),
-                      }) as DateRange,
-                  },
-                  {
-                    label: "本月",
-                    getRange: () =>
-                      ({
-                        start: dayjs().startOf("month").format("YYYY-MM-DD"),
-                        end: dayjs().format("YYYY-MM-DD"),
-                      }) as DateRange,
-                  },
-                ]}
-              />
-            </div>
-          </Panel>
+          <div className="list-toolbar progress-query-form metrics-toolbar">
+            <DateRangeInput
+              label="统计日期"
+              value={
+                filters.from && filters.to
+                  ? ({ start: filters.from, end: filters.to } as DateRange)
+                  : null
+              }
+              onChange={(range) =>
+                setFilters(range ? { from: range.start, to: range.end } : {})
+              }
+              placeholder="全部日期"
+              presets={[
+                {
+                  label: "最近 7 天",
+                  getRange: () =>
+                    ({
+                      start: dayjs().subtract(6, "day").format("YYYY-MM-DD"),
+                      end: dayjs().format("YYYY-MM-DD"),
+                    }) as DateRange,
+                },
+                {
+                  label: "最近 30 天",
+                  getRange: () =>
+                    ({
+                      start: dayjs().subtract(29, "day").format("YYYY-MM-DD"),
+                      end: dayjs().format("YYYY-MM-DD"),
+                    }) as DateRange,
+                },
+                {
+                  label: "本月",
+                  getRange: () =>
+                    ({
+                      start: dayjs().startOf("month").format("YYYY-MM-DD"),
+                      end: dayjs().format("YYYY-MM-DD"),
+                    }) as DateRange,
+                },
+              ]}
+            />
+          </div>
           <LoadState loading={loading} error={error} retry={reload}>
             {data && (
               <>
                 <div className="progress-kpis">
                   {data.cards.slice(0, 4).map((card) => (
-                    <Panel key={card.label} className="progress-kpi">
+                    <Panel key={card.label}>
                       <div className="progress-kpi-label">{card.label}</div>
                       <div className="progress-kpi-value">
                         <strong>{card.value}</strong>
@@ -134,9 +139,7 @@ export default function MetricsPage() {
                   <Panel
                     title="工单量排行"
                     actions={
-                      <span className={["secondary", ""].join(" ")}>
-                        按原因 · 单
-                      </span>
+                      <span className="secondary small">按原因 · 单</span>
                     }
                   >
                     {reasons.length ? (
@@ -149,12 +152,7 @@ export default function MetricsPage() {
                             <div className="progress-rank-label">
                               <span>{entry.name}</span>
                               {session.role === "COMPLIANCE_HEAD" && (
-                                <span
-                                  className={[
-                                    "secondary",
-                                    "progress-code",
-                                  ].join(" ")}
-                                >
+                                <span className="secondary progress-code">
                                   {entry.code}
                                 </span>
                               )}
@@ -188,9 +186,7 @@ export default function MetricsPage() {
                   <Panel
                     title="端到端上线时长分布"
                     actions={
-                      <span className={["secondary", ""].join(" ")}>
-                        申请数 · 单
-                      </span>
+                      <span className="secondary small">申请数 · 单</span>
                     }
                   >
                     {data.duration.some((entry) => entry.count > 0) ? (
@@ -235,10 +231,8 @@ export default function MetricsPage() {
                   title="补件流失率趋势"
                   actions={
                     <div className="row">
-                      <span className={["secondary", ""].join(" ")}>
-                        区间流失率
-                      </span>
-                      <Badge>{data.lossRate.toFixed(1)}%</Badge>
+                      <span className="secondary small">区间流失率</span>
+                      <strong>{data.lossRate.toFixed(1)}%</strong>
                     </div>
                   }
                 >

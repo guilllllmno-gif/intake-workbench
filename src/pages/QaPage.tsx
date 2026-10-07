@@ -59,9 +59,10 @@ const blindViews = ["evidence"] as const;
 const revealedViews = ["evidence", "comparison", "history"] as const;
 
 export default function QaPage() {
-  const { data, loading, error, reload, busy, stale, act } = useOrder();
+  const { data, loading, error, reload, busy, stale, act, mutationError } =
+    useOrder();
   const { session } = useSession();
-  const { next } = useQueueFlow();
+  const { next, busy: nextBusy } = useQueueFlow();
   const revealed =
     data?.workOrder.status === "COMPARE" || data?.workOrder.status === "CLOSED";
   const [view, setView] = useDetailView(
@@ -187,7 +188,6 @@ export default function QaPage() {
               : { correctiveActions: [] }),
           });
     if (result) setPreview(null);
-    if (result?.workOrder.status === "CLOSED") await next(order.id);
   };
   const independentItems: CheckItem[] = checkItems.map((item) => ({
     id: item.id,
@@ -266,7 +266,18 @@ export default function QaPage() {
     <div
       className={`page detail-page dv-page dv-qa-page qa-detail-workspace${revealed ? " is-revealed" : ""}`}
     >
-      <OrderHeader data={data} />
+      <OrderHeader
+        data={data}
+        actions={
+          order.status === "CLOSED" ? (
+            <Button
+              label="领取下一单"
+              isLoading={nextBusy}
+              onClick={() => void next(order.id)}
+            />
+          ) : undefined
+        }
+      />
       {error && (
         <div className="dv-notice dv-error" role="alert">
           {error.message}
@@ -275,7 +286,7 @@ export default function QaPage() {
       {stale && (
         <div className="dv-notice dv-warning" role="alert">
           <span>工单已更新，点击刷新</span>
-          <Button label="刷新" onClick={reload} />
+          <Button label="刷新" variant="secondary" onClick={reload} />
         </div>
       )}
       <div className="qa-workspace-navigation">
@@ -374,7 +385,7 @@ export default function QaPage() {
         </Panel>
         {!revealed && (
           <section
-            className={`rv-conclusion dv-qa-conclusion${dangerSelected ? " dv-danger-selected" : ""}`}
+            className="rv-conclusion dv-qa-conclusion"
             aria-label="独立判断"
           >
             <div className="rv-conclusion-content">
@@ -390,7 +401,7 @@ export default function QaPage() {
                       key={option.value}
                       label={option.label}
                       variant="secondary"
-                      className={`dv-disposition${conclusions[activeCheck.id] === option.value ? " is-selected" : ""}${option.value === "DECLINED" || DECLINE_CONCLUSIONS[option.value] ? " dv-danger-action" : ""}`}
+                      className={`dv-disposition${conclusions[activeCheck.id] === option.value ? " is-selected" : ""}`}
                       aria-pressed={
                         conclusions[activeCheck.id] === option.value
                       }
@@ -613,6 +624,7 @@ export default function QaPage() {
         onConfirm={submit}
         onClose={() => setPreview(null)}
         busy={busy}
+        error={mutationError}
         confirmDisabled={preview === "blind" ? !validBlind : !validComplete}
       >
         {preview === "blind" && (

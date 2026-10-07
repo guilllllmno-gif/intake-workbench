@@ -46,9 +46,10 @@ const exclusionOptions = [
 const ignoreDraft = () => {};
 
 export default function CompliancePage() {
-  const { data, loading, error, reload, busy, stale, act } = useOrder();
+  const { data, loading, error, reload, busy, stale, act, mutationError } =
+    useOrder();
   const { session } = useSession();
-  const { next } = useQueueFlow();
+  const { next, busy: nextBusy } = useQueueFlow();
   const [decision, setDecision] = useState("");
   const [preview, setPreview] = useState(false);
   const [reason, setReason] = useState("");
@@ -136,7 +137,6 @@ export default function CompliancePage() {
     if (result) {
       setDecision("");
       setPreview(false);
-      if (result.workOrder.status === "CLOSED") await next(order.id);
     }
   };
   const panels: CheckItem[] = [...checks];
@@ -183,7 +183,18 @@ export default function CompliancePage() {
   };
   return (
     <div className="page dv-page detail-page dv-decision-page">
-      <OrderHeader data={data} />
+      <OrderHeader
+        data={data}
+        actions={
+          order.status === "CLOSED" ? (
+            <Button
+              label="领取下一单"
+              isLoading={nextBusy}
+              onClick={() => void next(order.id)}
+            />
+          ) : undefined
+        }
+      />
       <div className="dv-notice">
         <LockKeyhole size={16} aria-hidden="true" />
         <span>受限内容 · 仅合规负责人可见，不向商户或销售披露处置原因。</span>
@@ -405,72 +416,65 @@ export default function CompliancePage() {
                 onClick={() => setTab("evidence")}
               />
             </div>
-          </OrderSummary>
-          {order.status !== "CLOSED" && (
-            <Panel title="受限处置" className="detail-context dv-treatment">
-              <div className="dv-stack">
-                <div
-                  className="dv-dispositions"
-                  role="group"
-                  aria-label="选择处置结果"
-                >
-                  {action("EXCLUDE")}
-                  {action("DECLINE")}
-                  {action("CASE")}
-                  {waitingSecond && action("DISAGREE")}
-                </div>
-                <p
-                  className={
-                    decision === "DECLINE" ? "dv-danger-selection" : "secondary"
-                  }
-                  aria-live="polite"
-                >
-                  {decision
-                    ? `已选择：${decisionLabels[decision]}`
-                    : "请选择处置结果并填写依据，选择不会提交"}
-                </p>
-                <div className="dv-form-grid">
-                  {decision === "EXCLUDE" && (
-                    <Selector
-                      label="排除原因"
+            {order.status !== "CLOSED" && (
+              <section className="dv-treatment" aria-label="受限处置">
+                <div className="dv-stack">
+                  <div
+                    className="dv-dispositions"
+                    role="group"
+                    aria-label="选择处置结果"
+                  >
+                    {action("EXCLUDE")}
+                    {action("DECLINE")}
+                    {action("CASE")}
+                    {waitingSecond && action("DISAGREE")}
+                  </div>
+                  <p
+                    className={
+                      decision === "DECLINE"
+                        ? "dv-danger-selection"
+                        : "secondary"
+                    }
+                    aria-live="polite"
+                  >
+                    {decision === "DECLINE"
+                      ? "已选择确认拒绝 · 双人确认后将结案为拒绝，申请变为未通过。"
+                      : decision
+                        ? `已选择：${decisionLabels[decision]}`
+                        : "请选择处置结果并填写依据，选择不会提交"}
+                  </p>
+                  <div className="dv-form-grid">
+                    {decision === "EXCLUDE" && (
+                      <Selector
+                        label="排除原因"
+                        isRequired
+                        options={exclusionOptions}
+                        value={excludeReason || undefined}
+                        onChange={setExcludeReason}
+                        placeholder="选择排除依据"
+                        isDisabled={Boolean(blocked) || busy}
+                      />
+                    )}
+                    <TextArea
+                      label="处置依据"
                       isRequired
-                      options={exclusionOptions}
-                      value={excludeReason || undefined}
-                      onChange={setExcludeReason}
-                      placeholder="选择排除依据"
+                      value={reason}
+                      onChange={setReason}
+                      rows={2}
+                      placeholder="填写证据与处置依据"
                       isDisabled={Boolean(blocked) || busy}
                     />
-                  )}
-                  <TextArea
-                    label="处置依据"
-                    isRequired
-                    value={reason}
-                    onChange={setReason}
-                    rows={2}
-                    placeholder="填写证据与处置依据"
-                    isDisabled={Boolean(blocked) || busy}
-                  />
-                </div>
-                <div className="row between">
-                  <span className="secondary">
-                    {blocked ||
-                      (waitingSecond
-                        ? "请确认第一位处置意见，或退回重新研判"
-                        : "提交后仍须由另一位合规负责人复核，申请保持冻结")}
-                  </span>
+                  </div>
                   <Button
                     label="提交处置"
-                    variant="secondary"
-                    className={
-                      decision === "DECLINE" ? "dv-danger-action" : undefined
-                    }
+                    variant="primary"
                     isDisabled={!valid || busy}
                     onClick={() => setPreview(true)}
                   />
                 </div>
-              </div>
-            </Panel>
-          )}
+              </section>
+            )}
+          </OrderSummary>
         </aside>
       </div>
       <Confirm
@@ -492,6 +496,7 @@ export default function CompliancePage() {
         onConfirm={submit}
         onClose={() => setPreview(false)}
         busy={busy}
+        error={mutationError}
         confirmDisabled={!valid}
         danger={decision === "DECLINE"}
       >

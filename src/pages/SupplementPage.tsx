@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
-import { useHref, useSearchParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link as RouteLink, useHref, useSearchParams } from "react-router-dom";
 import { Banner } from "@astryxdesign/core/Banner";
-import { BottomSheet } from "@astryxdesign/core/BottomSheet";
+import { Button } from "@astryxdesign/core/Button";
 import {
   DateTimeInput,
   type ISODateTimeString,
@@ -14,7 +14,15 @@ import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import dayjs from "dayjs";
 import { api } from "../api";
-import { useDetailView, useOrder, useQueueFlow, useSession } from "../hooks";
+import { orderPath } from "../access";
+import {
+  useAsync,
+  useDetailView,
+  useNotice,
+  useOrder,
+  useQueueFlow,
+  useSession,
+} from "../hooks";
 import {
   Badge,
   Btn,
@@ -103,12 +111,7 @@ export function MaterialPreview({
               (file.content?.startsWith("data:") ? file.content : undefined);
             return (
               <li key={file.id}>
-                <button
-                  type="button"
-                  className="ops-thumbnail"
-                  onClick={() => setSelected(file)}
-                  aria-label={`${text("预览", "Preview")} ${file.name}`}
-                >
+                <div className="ops-attachment">
                   <span className="ops-thumbnail-image" aria-hidden="true">
                     {url && file.type.startsWith("image/") ? (
                       <img src={url} alt="" loading="lazy" />
@@ -123,11 +126,17 @@ export function MaterialPreview({
                       <span>{text("文件", "File")}</span>
                     )}
                   </span>
-                  <strong>{file.name}</strong>
+                  <span className="ops-wrap">{file.name}</span>
                   <span className="secondary">
                     {(file.size / 1024).toFixed(1)} KB
                   </span>
-                </button>
+                  <Btn
+                    onClick={() => setSelected(file)}
+                    title={`${text("预览", "Preview")} ${file.name}`}
+                  >
+                    {text("预览", "Preview")}
+                  </Btn>
+                </div>
                 {!merchant && (
                   <div className="secondary">
                     <PersonName user={file.uploadedBy} /> ·{" "}
@@ -186,9 +195,24 @@ export function MaterialPreview({
 
 export default function SupplementPage() {
   const { session } = useSession();
+  const notice = useNotice();
   const queueFlow = useQueueFlow();
   const merchantHref = useHref("/merchant/");
-  const { data, loading, error, stale, busy, reload, act } = useOrder();
+  const { data, loading, error, mutationError, stale, busy, reload, act } =
+    useOrder();
+  const sourceApplication = useAsync(
+    () =>
+      data
+        ? api.getApplication(data.application.id, session)
+        : Promise.resolve(null),
+    [
+      data?.application.id,
+      data?.workOrder.status,
+      session.userId,
+      session.role,
+    ],
+  );
+  const [actionFeedback, setActionFeedback] = useState("");
   const [tab, setTab] = useDetailView("workspace", [
     "workspace",
     ...(session.role === "OPS_AGENT" ||
@@ -221,6 +245,8 @@ export default function SupplementPage() {
   const [noticePreview, setNoticePreview] = useState<NoticePreview | null>(
     null,
   );
+  const previousNotice = useRef<NoticePreview | null>(null);
+  const activeOrder = useRef("");
   const [noticeBody, setNoticeBody] = useState("");
   const [noticeLoading, setNoticeLoading] = useState(false);
   const [noticeError, setNoticeError] = useState("");
@@ -239,9 +265,15 @@ export default function SupplementPage() {
   >("PHONE");
   const [dueAt, setDueAt] = useState<dayjs.Dayjs | null>(null);
   const [files, setFiles] = useState<UploadedFile[]>([]);
+  const [filesReading, setFilesReading] = useState(false);
   const [extensionId, setExtensionId] = useState("");
   const w = data?.workOrder;
   const items = w?.items || [];
+  const sourceIds = new Set(items.map((item) => item.sourceWorkOrderId));
+  const sourceOrders =
+    sourceApplication.data?.workOrders?.filter((order) =>
+      sourceIds.has(order.id),
+    ) || [];
   const selected =
     items.find((item) => item.id === selectedId) ||
     items.find((item) => !item.checked) ||
@@ -289,10 +321,17 @@ export default function SupplementPage() {
     selected?.rejectReason,
   ]);
   useEffect(() => {
+    if (!w?.id) return;
+    const identity = `${session.userId}:${w.id}`;
+    if (activeOrder.current === identity) return;
+    activeOrder.current = identity;
     setDialog("");
     setCopyStatus("");
     setNoticeOpen(false);
     setReleaseReason("");
+    setActionFeedback("");
+    previousNotice.current = null;
+    setNoticeBody("");
   }, [w?.id, session.userId]);
   useEffect(() => {
     if (!noticeOpen || !w?.id) return;
@@ -301,12 +340,38 @@ export default function SupplementPage() {
     setNoticeError("");
     setNoticePreview(null);
     void api
-      .previewNotice(w.id, { channel: noticeChannel }, session)
+      .previewNotice(
+        w.id,
+        { channel: noticeChannel, recipient: recipient.trim() },
+        session,
+      )
       .then(
         (preview) => {
           if (!current) return;
+          const previous = previousNotice.current;
           setNoticePreview(preview);
-          setNoticeBody(preview.body);
+          const refreshBody = (body: string) =>
+            previous
+              ? body
+                  .replace(previous.salutation, preview.salutation)
+                  .replace(previous.link, preview.link)
+                  .replace(
+                    previous.dueAt.slice(0, 10),
+                    preview.dueAt.slice(0, 10),
+                  )
+              : body;
+          const templateChanged =
+            !!previous && refreshBody(previous.body) !== preview.body;
+          setNoticeBody((body) =>
+            !previous || body === previous.body || templateChanged
+              ? preview.body
+              : refreshBody(body),
+          );
+          if (templateChanged)
+            notice(
+              "补件要求已变化，通知正文已按最新模板重新生成，请核对后发送。",
+            );
+          previousNotice.current = preview;
         },
         (error: unknown) => {
           if (current)
@@ -323,7 +388,16 @@ export default function SupplementPage() {
     return () => {
       current = false;
     };
-  }, [noticeOpen, w?.id, w?.version, noticeChannel, session, previewRevision]);
+  }, [
+    noticeOpen,
+    notice,
+    w?.id,
+    w?.version,
+    noticeChannel,
+    recipient,
+    session,
+    previewRevision,
+  ]);
   function open(name: string) {
     setReason("");
     setFiles([]);
@@ -344,7 +418,7 @@ export default function SupplementPage() {
         ? contact?.email || ""
         : channel === "SMS"
           ? contact?.phone || ""
-          : contact?.email || "",
+          : contact?.email || contact?.phone || contact?.name || "",
     );
     setNoticeOpen(true);
   }
@@ -352,12 +426,26 @@ export default function SupplementPage() {
     action: MutationAction,
     payload: Record<string, unknown> = {},
   ) {
+    setActionFeedback("");
     const result = await act(action, payload);
     if (result) {
       setDialog("");
-      if (action === "notices") setNoticeOpen(false);
-      if (action === "complete-supplement" || action === "withdraw")
-        await queueFlow.next(result.workOrder.id);
+      if (action === "notices") {
+        setNoticeOpen(false);
+        setActionFeedback(
+          "补件通知已发送。可打开商户入口提交资料，完成后返回此页刷新并进行齐套检查。",
+        );
+      }
+      if (action === "return-to-merchant")
+        setActionFeedback(
+          "已退回补正。可用材料已保留，等待商户重新提交其余项目。",
+        );
+      if (action === "complete-supplement")
+        setActionFeedback(
+          "补件已完成，已更新原工单。请从「来源工单」查看后续处理。",
+        );
+      if (action === "withdraw")
+        setActionFeedback("已记录商户放弃，申请已撤回。");
     }
     return result;
   }
@@ -464,12 +552,12 @@ export default function SupplementPage() {
   const formInvalid =
     (["extend", "withdraw", "reject-extension"].includes(dialog) &&
       !reason.trim()) ||
-    (dialog === "withdraw" && !files.length) ||
+    (dialog === "withdraw" && (!files.length || filesReading)) ||
     (dialog === "extend" && (!extensionValid || !!pendingExtension)) ||
     (dialog === "complete" && !allUsable) ||
     (dialog === "return" && (!rejected.length || uncheckedProvided));
   const actions =
-    ops && w && !terminal ? (
+    ops && w && !terminal && (!w.assignee || owns) ? (
       <div className="row">
         {!w.assignee ? (
           <Btn
@@ -506,7 +594,7 @@ export default function SupplementPage() {
               </Btn>
             ) : w.status === "TO_CHECK" ? (
               <Btn
-                variant="primary"
+                variant={allUsable && !disabled ? "primary" : "secondary"}
                 disabled={disabled || !allUsable}
                 title={
                   disabledReason ||
@@ -528,37 +616,34 @@ export default function SupplementPage() {
             </Btn>
           </>
         )}
-        <Btn
-          disabled={disabled || w.status !== "WAITING_MERCHANT"}
-          title={
-            disabledReason ||
-            (w.status !== "WAITING_MERCHANT"
-              ? "手动催办：发送通知并等待商户时可用"
-              : undefined)
-          }
-          onClick={() => open("remind")}
-        >
-          手动催办
-        </Btn>
-        <Btn
-          disabled={
-            disabled || w.status !== "WAITING_MERCHANT" || !!pendingExtension
-          }
-          title={
-            disabledReason ||
-            (pendingExtension
-              ? "申请延期：现有延期审批完成后可用"
-              : w.status !== "WAITING_MERCHANT"
-                ? "申请延期：发送通知并等待商户时可用"
-                : undefined)
-          }
-          onClick={() => open("extend")}
-        >
-          申请延期
-        </Btn>
         <DropdownMenu
           button={{ label: "更多", variant: "secondary" }}
           items={[
+            {
+              label: "手动催办",
+              description:
+                disabledReason ||
+                (w.status !== "WAITING_MERCHANT"
+                  ? "发送通知并等待商户时可用"
+                  : undefined),
+              isDisabled: disabled || w.status !== "WAITING_MERCHANT",
+              onClick: () => open("remind"),
+            },
+            {
+              label: "申请延期",
+              description:
+                disabledReason ||
+                (pendingExtension
+                  ? "现有延期审批完成后可用"
+                  : w.status !== "WAITING_MERCHANT"
+                    ? "发送通知并等待商户时可用"
+                    : undefined),
+              isDisabled:
+                disabled ||
+                w.status !== "WAITING_MERCHANT" ||
+                !!pendingExtension,
+              onClick: () => open("extend"),
+            },
             {
               label: "退回补正",
               description:
@@ -590,14 +675,17 @@ export default function SupplementPage() {
           title="释放工单后，工单回到待领取队列，SLA 继续计时。"
           disabled={disabled}
           busy={busy}
+          error={mutationError}
           content={
-            <TextArea
-              label="释放原因"
-              isRequired
-              value={releaseReason}
-              onChange={setReleaseReason}
-              description="填写释放原因后可确认，不向商户发送。"
-            />
+            <div className="stack">
+              <TextArea
+                label="释放原因"
+                isRequired
+                value={releaseReason}
+                onChange={setReleaseReason}
+                description="填写释放原因后可确认，不向商户发送。"
+              />
+            </div>
           }
           confirmDisabled={!releaseReason.trim()}
           onConfirm={() => execute("release", { reason: releaseReason.trim() })}
@@ -614,6 +702,10 @@ export default function SupplementPage() {
         {data && w && (
           <>
             <OrderHeader data={data} />
+            {actionFeedback && (
+              <Banner status="success" title={actionFeedback} />
+            )}
+            {mutationError && <Banner status="error" title={mutationError} />}
             {stale && (
               <Banner
                 status="warning"
@@ -622,14 +714,11 @@ export default function SupplementPage() {
               />
             )}
             {ops && !terminal && !owns && (
-              <Banner
-                status="info"
-                title={
-                  w.assignee
-                    ? `当前由 ${w.assignee.name} 处理`
-                    : "可以浏览材料；点击主操作领取并继续"
-                }
-              />
+              <p className="secondary">
+                {w.assignee
+                  ? `当前由 ${w.assignee.name} 处理`
+                  : "可以浏览材料；点击主操作领取并继续"}
+              </p>
             )}
             <DetailTabs
               id="supplement"
@@ -666,31 +755,26 @@ export default function SupplementPage() {
                           <p>{w.noteToOps}</p>
                         </div>
                       )}
-                      <Panel
-                        title={`补件清单 · ${items.length} 项`}
-                        className="ops-list-panel"
-                      >
+                      <Panel title="补件清单">
                         {items.length ? (
                           <ul className="ops-item-list">
-                            {items.map((item) => (
+                            {items.map((item, index) => (
                               <li
                                 key={item.id}
                                 className={
                                   selected?.id === item.id ? "ops-selected" : ""
                                 }
                               >
-                                <button
-                                  type="button"
-                                  className="ops-item-button"
+                                <Button
+                                  label={`${index + 1}. ${supplementActionLabels[item.actionType]}`}
+                                  variant="ghost"
                                   aria-pressed={selected?.id === item.id}
                                   onClick={() => setSelectedId(item.id)}
-                                >
+                                />
+                                <p className="ops-preserve">
                                   {item.externalText.zh}
-                                </button>
-                                <div className="row ops-item-meta">
-                                  <span className="secondary">
-                                    {supplementActionLabels[item.actionType]}
-                                  </span>
+                                </p>
+                                <div className="row">
                                   <Badge
                                     tone={
                                       item.status === "REJECTED"
@@ -713,12 +797,12 @@ export default function SupplementPage() {
                         )}
                       </Panel>
                     </div>
-                    <Panel
-                      title={selected?.externalText.zh || "提交内容"}
-                      className="ops-center-panel"
-                    >
+                    <Panel title="提交内容">
                       {selected ? (
                         <div className="stack">
+                          <p className="ops-preserve">
+                            {selected.externalText.zh}
+                          </p>
                           <MaterialPreview
                             files={selected.files}
                             value={selected.response}
@@ -741,66 +825,68 @@ export default function SupplementPage() {
                               className="ops-quality"
                               id="supplement-quality"
                             >
-                              <h2 className="section-title">齐套检查</h2>
-                              <div
-                                className="ops-quality-segments"
-                                role="group"
-                                aria-label="检查结论"
-                              >
-                                {(
-                                  [
-                                    ["USABLE", "可用"],
-                                    ["REJECTED", "不合格"],
-                                    ["MISSING", "未提供"],
-                                  ] as const
-                                ).map(([result, label]) => (
-                                  <button
-                                    key={result}
-                                    type="button"
-                                    className={
-                                      result === "REJECTED"
-                                        ? "ops-quality-reject"
-                                        : ""
-                                    }
-                                    aria-pressed={
-                                      result === "USABLE"
+                              <Field label="齐套检查">
+                                <div
+                                  className="row"
+                                  role="group"
+                                  aria-label="检查结论"
+                                >
+                                  {(
+                                    [
+                                      ["USABLE", "可用"],
+                                      ["REJECTED", "不合格"],
+                                      ["MISSING", "未提供"],
+                                    ] as const
+                                  ).map(([result, label]) => (
+                                    <Button
+                                      key={result}
+                                      label={label}
+                                      variant="secondary"
+                                      aria-pressed={
+                                        result === "USABLE"
+                                          ? selected.checked &&
+                                            selected.status === "PROVIDED"
+                                          : selected.status === result
+                                      }
+                                      isDisabled={
+                                        disabled ||
+                                        (result === "USABLE" &&
+                                          selected.status !== "PROVIDED")
+                                      }
+                                      tooltip={
+                                        disabledReason ||
+                                        (result === "USABLE" &&
+                                        selected.status !== "PROVIDED"
+                                          ? "商户提供本项材料后可判定可用"
+                                          : undefined)
+                                      }
+                                      onClick={() => {
+                                        if (result === "REJECTED") {
+                                          setRejectReason(
+                                            selected.rejectReason || "",
+                                          );
+                                          setRejectItemId(selected.id);
+                                        } else {
+                                          void execute("supplement-check", {
+                                            itemId: selected.id,
+                                            result,
+                                            ...(result === "MISSING"
+                                              ? { reason: "未提供" }
+                                              : {}),
+                                          });
+                                        }
+                                      }}
+                                    >
+                                      {label}
+                                      {(result === "USABLE"
                                         ? selected.checked &&
                                           selected.status === "PROVIDED"
-                                        : selected.status === result
-                                    }
-                                    disabled={
-                                      disabled ||
-                                      (result === "USABLE" &&
-                                        selected.status !== "PROVIDED")
-                                    }
-                                    title={
-                                      disabledReason ||
-                                      (result === "USABLE" &&
-                                      selected.status !== "PROVIDED"
-                                        ? "商户提供本项材料后可判定可用"
-                                        : undefined)
-                                    }
-                                    onClick={() => {
-                                      if (result === "REJECTED") {
-                                        setRejectReason(
-                                          selected.rejectReason || "",
-                                        );
-                                        setRejectItemId(selected.id);
-                                      } else {
-                                        void execute("supplement-check", {
-                                          itemId: selected.id,
-                                          result,
-                                          ...(result === "MISSING"
-                                            ? { reason: "未提供" }
-                                            : {}),
-                                        });
-                                      }
-                                    }}
-                                  >
-                                    {label}
-                                  </button>
-                                ))}
-                              </div>
+                                        : selected.status === result) &&
+                                        " · 当前"}
+                                    </Button>
+                                  ))}
+                                </div>
+                              </Field>
                             </section>
                           )}
                         </div>
@@ -922,25 +1008,28 @@ export default function SupplementPage() {
                       )}
                       {w.merchantToken && (
                         <div className="stack">
-                          <Link href={`${merchantHref}${w.merchantToken}`}>
-                            补件链接
-                          </Link>
+                          <RouteLink
+                            to={`/merchant/${encodeURIComponent(w.merchantToken)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            打开商户入口（新标签页）
+                          </RouteLink>
                           <Btn
-                            onClick={() => {
-                              void navigator.clipboard
-                                .writeText(
+                            onClick={async () => {
+                              try {
+                                await navigator.clipboard.writeText(
                                   new URL(
-                                    `${merchantHref}${w.merchantToken}`,
+                                    `${merchantHref}${encodeURIComponent(w.merchantToken!)}`,
                                     window.location.href,
                                   ).href,
-                                )
-                                .then(
-                                  () => setCopyStatus("补件链接已复制"),
-                                  () =>
-                                    setCopyStatus(
-                                      "复制失败，请打开补件链接后复制地址",
-                                    ),
                                 );
+                                setCopyStatus("补件链接已复制");
+                              } catch {
+                                setCopyStatus(
+                                  "复制失败，请打开补件链接后复制地址",
+                                );
+                              }
                             }}
                           >
                             复制补件链接
@@ -1082,7 +1171,54 @@ export default function SupplementPage() {
                           ? "预览补件通知，确认收件人与通讯语言后发送。"
                           : "等待商户补交，可记录沟通、催办或申请延期。"}
                   </p>
+                  {ops &&
+                    w.merchantToken &&
+                    w.status === "WAITING_MERCHANT" && (
+                      <RouteLink
+                        to={`/merchant/${encodeURIComponent(w.merchantToken)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        打开商户入口（新标签页）
+                      </RouteLink>
+                    )}
+                  {ops && terminal && (
+                    <Btn
+                      disabled={queueFlow.busy}
+                      busy={queueFlow.busy}
+                      onClick={() => void queueFlow.next(w.id)}
+                    >
+                      领取下一单
+                    </Btn>
+                  )}
                 </OrderSummary>
+                {!!sourceIds.size && (
+                  <Panel title="来源工单" className="detail-context">
+                    {sourceApplication.loading ? (
+                      <p role="status">正在加载来源工单…</p>
+                    ) : sourceApplication.error ? (
+                      <Banner
+                        status="error"
+                        title="来源工单加载失败"
+                        endContent={
+                          <Btn onClick={sourceApplication.reload}>重试</Btn>
+                        }
+                      />
+                    ) : sourceOrders.length ? (
+                      <div className="stack">
+                        {sourceOrders.map((order) => (
+                          <RouteLink key={order.id} to={orderPath(order)}>
+                            返回原工单 {order.id}
+                          </RouteLink>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="secondary">
+                        当前角色无权查看来源工单，请由具有原单权限的处理人继续。补件完成后会自动更新原单。
+                      </p>
+                    )}
+                  </Panel>
+                )}
                 {pendingExtension && (
                   <Panel title="待处理延期" className="detail-context">
                     <p>
@@ -1102,27 +1238,20 @@ export default function SupplementPage() {
                 )}
               </aside>
             </div>
-            <BottomSheet
+            <Dialog
               isOpen={noticeOpen && ops}
               onOpenChange={(isOpen) => {
                 if (!busy) setNoticeOpen(isOpen);
               }}
-              label="发送补件通知"
-              purpose="form"
-              height="tall"
-              className="ops-notice-sheet"
+              purpose={busy ? "required" : "form"}
+              width={1040}
+              padding={0}
             >
+              <DialogHeader
+                title={`发送补件通知 · ${noticeItems.length} 项`}
+                onOpenChange={busy ? undefined : setNoticeOpen}
+              />
               <div className="ops-pages ops-notice-content">
-                <div className="spread">
-                  <h2>发送补件通知 · {noticeItems.length} 项</h2>
-                  <Btn
-                    onClick={() => setNoticeOpen(false)}
-                    disabled={busy}
-                    title={busy ? "发送处理中，完成后可关闭" : undefined}
-                  >
-                    关闭
-                  </Btn>
-                </div>
                 <div className="ops-notice-editor ops-dialog-body">
                   <div className="stack">
                     <Selector
@@ -1140,20 +1269,39 @@ export default function SupplementPage() {
                         setRecipient(
                           next === "SMS"
                             ? contact?.phone || ""
-                            : contact?.email || "",
+                            : next === "EMAIL"
+                              ? contact?.email || ""
+                              : contact?.email ||
+                                contact?.phone ||
+                                contact?.name ||
+                                "",
                         );
                       }}
                     />
-                    <TextInput
+                    <Selector
                       label="收件人"
                       isRequired
                       value={recipient}
+                      options={contacts.flatMap((person) => {
+                        const value =
+                          noticeChannel === "SMS"
+                            ? person.phone
+                            : noticeChannel === "EMAIL"
+                              ? person.email
+                              : person.email || person.phone || person.name;
+                        return value
+                          ? [{ value, label: `${person.name} · ${value}` }]
+                          : [];
+                      })}
                       onChange={setRecipient}
                       isDisabled={busy}
                     />
                     <p className="secondary">
                       按申请登记的通讯语言生成中性文案，未登记时使用英文；补件项目不可删除，不得加入内部审核信息。
                     </p>
+                    {mutationError && (
+                      <Banner status="error" title={mutationError} />
+                    )}
                     {noticeError && (
                       <Banner
                         status="error"
@@ -1247,6 +1395,7 @@ export default function SupplementPage() {
                     <InlineConfirm
                       title={`确认向 ${recipient} 发送补件通知？发送后不可撤回。`}
                       confirmLabel="确认发送"
+                      error={mutationError}
                       disabled={
                         disabled ||
                         noticeLoading ||
@@ -1293,7 +1442,7 @@ export default function SupplementPage() {
                   </div>
                 </footer>
               </div>
-            </BottomSheet>
+            </Dialog>
             <Dialog
               isOpen={!!rejectItemId}
               onOpenChange={(open) => {
@@ -1309,6 +1458,9 @@ export default function SupplementPage() {
                 }}
               />
               <div className="stack ops-dialog-body">
+                {mutationError && (
+                  <Banner status="error" title={mutationError} />
+                )}
                 <p>
                   {
                     items.find((item) => item.id === rejectItemId)?.externalText
@@ -1374,6 +1526,9 @@ export default function SupplementPage() {
                 }}
               >
                 <div className="stack ops-dialog-body">
+                  {mutationError && (
+                    <Banner status="error" title={mutationError} />
+                  )}
                   <DateTimeInput
                     label="沟通时间"
                     isRequired
@@ -1477,13 +1632,22 @@ export default function SupplementPage() {
                 onClose={() => setDialog("")}
                 onConfirm={confirmAction}
                 busy={busy}
-                confirmDisabled={formInvalid || stale}
+                error={mutationError}
+                confirmDisabled={
+                  formInvalid ||
+                  stale ||
+                  (dialog !== "approve-extension" &&
+                    dialog !== "reject-extension" &&
+                    disabled)
+                }
                 danger={dialog === "withdraw" || dialog === "reject-extension"}
               >
                 {formInvalid && (
                   <p role="status" className="secondary">
                     {dialog === "withdraw"
-                      ? "填写放弃原因并上传商户书面确认后可提交。"
+                      ? filesReading
+                        ? "正在读取商户书面确认，请完成后再提交。"
+                        : "填写放弃原因并上传商户书面确认后可提交。"
                       : dialog === "extend"
                         ? pendingExtension
                           ? "现有延期申请审批完成后可再申请。"
@@ -1565,7 +1729,11 @@ export default function SupplementPage() {
                   )}
                   {dialog === "withdraw" && (
                     <Field label="商户书面确认（必填）">
-                      <FileUpload value={files} onChange={setFiles} />
+                      <FileUpload
+                        value={files}
+                        onChange={setFiles}
+                        onReadingChange={setFilesReading}
+                      />
                     </Field>
                   )}
                   {dialog === "approve-extension" && currentExtension && (

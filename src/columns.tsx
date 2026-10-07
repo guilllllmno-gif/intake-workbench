@@ -65,14 +65,16 @@ interface ColumnDef {
 export const COLUMN_DEFINITIONS: Record<string, ColumnDef> = {
   C01: {
     title: "工单号",
-    width: 150,
+    width: 172,
     render: (r) => <IdText value={queue(r)?.id} />,
   },
   C02: {
     title: "商户",
-    width: 200,
+    width: 300,
     render: (r, session) => {
       const legalName = isApp(r) ? r.merchant.legalName : r.merchantName;
+      const country = isApp(r) ? r.merchant.country : r.country;
+      const mcc = isApp(r) ? r.merchant.declaredMcc : r.declaredMcc;
       const displayName = merchantTradingName(
         legalName,
         isApp(r) ? r.merchant.displayName : r.displayName,
@@ -88,25 +90,32 @@ export const COLUMN_DEFINITIONS: Record<string, ColumnDef> = {
           : undefined;
       return (
         <div className="merchant-cell">
-          <div title={legalName}>
-            {legalName}
-            {(isApp(r) ? r.application.isKeyMerchant : r.isKeyMerchant) && (
-              <Badge variant="neutral" label="重点" />
-            )}
-            {!isApp(r) && r.hasNewEvidence && (
-              <Badge variant="info" label="有新证据" />
-            )}
-          </div>
-          {(displayName || otherAssignee) && (
-            <div className="secondary merchant-display">
-              {otherAssignee && (
-                <span>
-                  {otherAssignee.name}正在处理{displayName ? " · " : ""}
-                </span>
+          <span
+            className="merchant-avatar"
+            data-country={country}
+            aria-hidden="true"
+          >
+            {legalName.slice(0, 2).toUpperCase()}
+          </span>
+          <div className="merchant-copy">
+            <div className="merchant-name">
+              <Tooltip content={legalName}>
+                <strong tabIndex={0}>{legalName}</strong>
+              </Tooltip>
+              {(isApp(r) ? r.application.isKeyMerchant : r.isKeyMerchant) && (
+                <span className="merchant-tag">重点</span>
               )}
-              {displayName}
+              {!isApp(r) && r.hasNewEvidence && (
+                <span className="merchant-tag is-new">新证据</span>
+              )}
             </div>
-          )}
+            <div className="merchant-meta">
+              {otherAssignee && <span>{otherAssignee.name}正在处理</span>}
+              <span>{countryName(country)}</span>
+              {mcc && <span>{mccName(mcc)}</span>}
+              {displayName && <span>{displayName}</span>}
+            </div>
+          </div>
         </div>
       );
     },
@@ -147,17 +156,26 @@ export const COLUMN_DEFINITIONS: Record<string, ColumnDef> = {
   },
   C07: {
     title: "待处理检查项",
-    width: 200,
+    width: 232,
     render: (r) => {
       const row = queue(r);
-      const summary = row?.pendingCheckCount
-        ? `${row.pendingCheckCount} 项 · ${row.reasonName ?? "待审核"}`
-        : "—";
-      return row?.checkItems?.length ? (
+      const all = row?.checkItems ?? [];
+      if (!all.length)
+        return row?.pendingCheckCount
+          ? `${row.pendingCheckCount} 项 · ${row.reasonName ?? "待审核"}`
+          : "—";
+      const pending = all.filter((item) => item.status === "PENDING");
+      const items =
+        row?.type === "SUPPLEMENT" ||
+        row?.status === "WAITING_SUPPLEMENT" ||
+        !pending.length
+          ? all
+          : pending;
+      return (
         <Tooltip
           content={
-            <ul className="queue-check-summary">
-              {row.checkItems.map((item) => (
+            <ul className="check-summary">
+              {all.map((item) => (
                 <li key={item.id}>
                   {item.title} · {statusLabel(item.status)}
                 </li>
@@ -165,25 +183,33 @@ export const COLUMN_DEFINITIONS: Record<string, ColumnDef> = {
             </ul>
           }
         >
-          <span className="cell-ellipsis" tabIndex={0}>
-            {summary}
+          <span className="check-chips" tabIndex={0}>
+            {items.slice(0, 2).map((item) => (
+              <span
+                key={item.id}
+                className={`check-chip${item.status !== "PENDING" ? " is-settled" : ""}`}
+              >
+                {item.title}
+              </span>
+            ))}
+            {items.length > 2 && (
+              <span className="check-more">+{items.length - 2}</span>
+            )}
           </span>
         </Tooltip>
-      ) : (
-        summary
       );
     },
   },
   C08: {
     title: "优先级",
-    width: 64,
+    width: 80,
     render: (r) => {
       const p = isApp(r) ? r.currentOrder?.priority : r.priority;
       return p === "HIGH" ? (
-        <Badge variant="error" label="高" className="priority-high" />
-      ) : p === "LOW" ? (
-        <span className="secondary">低</span>
-      ) : null;
+        <span className="priority-indicator">高</span>
+      ) : (
+        <span className="secondary">{p === "LOW" ? "低" : "—"}</span>
+      );
     },
     sort: (r) =>
       ({ HIGH: 0, NORMAL: 1, LOW: 2 })[
@@ -496,8 +522,10 @@ export function getQueueColumnIds(view: QueueView, tab: string): string[] {
         ? [
             "C01",
             "C02",
+            "C03",
             "C04",
             "C07",
+            "C08",
             "C09",
             "supplementProgress",
             "C12",
@@ -506,6 +534,7 @@ export function getQueueColumnIds(view: QueueView, tab: string): string[] {
         : [
             "C01",
             "C02",
+            "C03",
             "C04",
             "C05",
             "C07",

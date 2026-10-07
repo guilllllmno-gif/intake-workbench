@@ -36,6 +36,7 @@ export default function SupplementNeedsDialog({
   currentCheckItemId,
   open,
   busy,
+  submissionError,
   onClose,
   onSubmit,
 }: {
@@ -43,6 +44,7 @@ export default function SupplementNeedsDialog({
   currentCheckItemId?: string;
   open: boolean;
   busy: boolean;
+  submissionError?: string;
   onClose: () => void;
   onSubmit: (payload: { items: Need[]; noteToOps: string }) => Promise<boolean>;
 }) {
@@ -106,6 +108,7 @@ export default function SupplementNeedsDialog({
       reversible="通知发送前可由运营核对文案；已提交的需求及处理记录保留。"
       confirmLabel="确认提补件需求"
       busy={busy}
+      error={submissionError}
       onClose={onClose}
       onConfirm={async () => {
         if (!needs.length) {

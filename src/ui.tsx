@@ -3,6 +3,7 @@ import {
   isValidElement,
   useEffect,
   useId,
+  useRef,
   useState,
   type ComponentProps,
   type ReactElement,
@@ -29,7 +30,6 @@ import { TabList, Tab } from "@astryxdesign/core/TabList";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import {
   ArrowLeft,
-  Building2,
   Check,
   Copy,
   Download,
@@ -48,7 +48,6 @@ import { ApiError } from "./api";
 import { CHECK_LABELS, CHECK_OPTIONS } from "./catalog";
 import {
   countryName,
-  merchantTradingName,
   dateTime,
   deadlineDate,
   duration,
@@ -255,16 +254,11 @@ export function OrderSummary({
     order.status,
   );
   return (
-    <Panel title={title} className="detail-context">
-      <div className="detail-summary-heading">
-        <strong>
-          {order.status === "PENDING_APPROVAL"
-            ? "审批"
-            : TYPE_LABELS[order.type]}
-          工单
-        </strong>
-        <StatusBadge status={order.status} />
-      </div>
+    <Panel
+      title={title}
+      className="detail-context"
+      actions={<StatusBadge status={order.status} />}
+    >
       <dl className="detail-summary-facts">
         <div>
           <dt>处理人</dt>
@@ -444,6 +438,7 @@ export function InlineConfirm({
   busy = false,
   content,
   confirmDisabled = false,
+  error: actionError,
 }: {
   children: ReactNode;
   title: string;
@@ -453,6 +448,7 @@ export function InlineConfirm({
   busy?: boolean;
   content?: ReactNode;
   confirmDisabled?: boolean;
+  error?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
@@ -477,7 +473,7 @@ export function InlineConfirm({
         <div className="inline-confirm">
           <strong>{title}</strong>
           {content}
-          {error && <span role="alert">{error}</span>}
+          {error && <span role="alert">{actionError || error}</span>}
           <div className="action-row">
             <Button
               label="取消"
@@ -493,9 +489,12 @@ export function InlineConfirm({
               isDisabled={disabled || confirmDisabled}
               onClick={async () => {
                 setPending(true);
+                setError("");
                 try {
-                  await onConfirm();
-                  setOpen(false);
+                  const result = await onConfirm();
+                  if (result === false || result === null)
+                    setError("操作未完成，请检查后重试。");
+                  else setOpen(false);
                 } catch (failure) {
                   setError(
                     failure instanceof Error
@@ -529,6 +528,7 @@ export function Confirm({
   children,
   danger,
   confirmDisabled,
+  error,
 }: {
   open: boolean;
   title: string;
@@ -543,21 +543,26 @@ export function Confirm({
   children?: ReactNode;
   danger?: boolean;
   confirmDisabled?: boolean;
+  error?: string;
 }) {
+  const [pending, setPending] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  useEffect(() => setFailure(null), [open]);
+  const submitting = busy || pending;
   return (
     <Dialog
       isOpen={open}
       onOpenChange={(next) => {
-        if (!next && !busy) onClose();
+        if (!next && !submitting) onClose();
       }}
-      purpose={busy ? "required" : "info"}
+      purpose={submitting ? "required" : "info"}
       width={600}
       padding={0}
       className="ui-confirm-dialog"
     >
       <DialogHeader
         title={title}
-        onOpenChange={busy ? undefined : () => onClose()}
+        onOpenChange={submitting ? undefined : () => onClose()}
       />
       <div className="consequence-preview">
         <section>
@@ -579,15 +584,32 @@ export function Confirm({
           <h3>能否撤销</h3>
           <div>{reversible}</div>
         </section>
+        {failure !== null && (error || failure) && (
+          <Banner status="error" title={error || failure} />
+        )}
       </div>
       <div className="ui-dialog-actions">
-        <Button label="取消" onClick={onClose} isDisabled={busy} />
+        <Button label="取消" onClick={onClose} isDisabled={submitting} />
         <Button
           label={confirmLabel}
           variant={danger ? "destructive" : "primary"}
-          isLoading={busy}
-          isDisabled={confirmDisabled}
-          onClick={() => void onConfirm()}
+          isLoading={submitting}
+          isDisabled={confirmDisabled || submitting}
+          onClick={async () => {
+            setPending(true);
+            setFailure("");
+            try {
+              const result = await onConfirm();
+              if (result === false || result === null)
+                setFailure("操作未完成，请检查后重试。");
+            } catch (cause) {
+              setFailure(
+                cause instanceof Error ? cause.message : "操作失败，请重试",
+              );
+            } finally {
+              setPending(false);
+            }
+          }}
         />
       </div>
     </Dialog>
@@ -630,13 +652,19 @@ export function StatusBadge({
 export function Sla({
   order,
 }: {
-  order: Pick<WorkOrder, "slaDueAt" | "slaPaused" | "createdAt">;
+  order: Pick<WorkOrder, "status" | "slaDueAt" | "slaPaused" | "createdAt">;
 }) {
-  const [now, setNow] = useState(Date.now());
+  const closed = ["CLOSED", "DONE", "CLOSED_NO_RESPONSE", "WITHDRAWN"].includes(
+    order.status,
+  );
+  const [now, setNow] = useState(Date.now);
   useEffect(() => {
+    if (closed || order.slaPaused) return;
+    setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 60000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [closed, order.slaPaused]);
+  if (closed) return <span className="secondary">已结束</span>;
   if (order.slaPaused) return <span className="secondary">已暂停</span>;
   const remaining = new Date(order.slaDueAt).getTime() - now;
   const full =
@@ -718,25 +746,21 @@ export function PersonName({ user }: { user?: UserRef }) {
 export function PageHeading({
   title,
   actions,
-  eyebrow: _eyebrow,
-  description: _description,
+  metadata,
 }: {
   title: ReactNode;
   actions?: ReactNode;
-  eyebrow?: string;
-  description?: ReactNode;
+  metadata?: ReactNode;
 }) {
   return (
     <div className="page-heading">
-      <nav className="ui-breadcrumb" aria-label="当前位置">
-        <span>工作台</span>
-        <span aria-hidden="true">/</span>
-        <span aria-current="page">
-          {typeof title === "string" ? title : "详情"}
-        </span>
-      </nav>
       <div className="page-title-row">
-        <h1>{title}</h1>
+        <div className="page-heading-title">
+          <h1>{title}</h1>
+          {metadata != null && (
+            <span className="page-heading-meta">{metadata}</span>
+          )}
+        </div>
         {actions && <div className="action-row">{actions}</div>}
       </div>
     </div>
@@ -761,9 +785,10 @@ export function OrderHeader({
           ? "restricted"
           : w.type === "QA"
             ? "qa"
-            : w.status === "PENDING_APPROVAL"
+            : w.status === "PENDING_APPROVAL" || session.role === "APPROVER"
               ? "approval"
               : "review";
+  const orderType = `${group === "approval" ? "审批" : TYPE_LABELS[w.type]}工单`;
   const common = [
     { key: "id", label: "工单号", children: <IdText value={w.id} /> },
     {
@@ -775,6 +800,15 @@ export function OrderHeader({
         </Link>
       ),
     },
+    { key: "type", label: "工单类型", children: orderType },
+    {
+      key: "merchant",
+      label: "商户简称",
+      children: m.displayName || m.legalName,
+    },
+    ...(a.isKeyMerchant
+      ? [{ key: "key", label: "商户标记", children: "重点商户" }]
+      : []),
   ];
   const fields =
     w.type === "SUPPLEMENT"
@@ -867,166 +901,60 @@ export function OrderHeader({
               children: <PersonName user={w.assignee} />,
             },
           ];
-  if (
-    (w.type === "REVIEW" && w.status !== "PENDING_APPROVAL") ||
-    w.type === "QA"
-  )
-    return (
-      <header className="order-header ui-order-compact detail-compact-header">
-        <Link
-          to={queueContext?.url ?? `/queue/${group}`}
-          className="ui-order-back"
-          aria-label="返回队列"
-          title="返回队列"
-        >
-          <ArrowLeft size={16} />
-        </Link>
-        <Tooltip content={m.legalName}>
-          <h1 tabIndex={0} className="ui-order-compact-name">
-            {m.legalName}
-          </h1>
-        </Tooltip>
-        <StatusBadge status={w.status} />
-        {w.priority === "HIGH" && (
-          <span className="priority-high">
-            <Badge tone="danger">高</Badge>
-          </span>
-        )}
-        <span className="ui-order-compact-id">
-          <IdText value={w.id} />
-        </span>
-        <span className="ui-order-compact-sla">
-          <Sla order={w} />
-        </span>
-        <Popover
-          label="工单信息"
-          closeButtonLabel="关闭工单信息"
-          placement="below"
-          width="min(400px, calc(100vw - 32px))"
-          content={
-            <dl className="ui-order-details ui-order-popover-details">
-              {fields.map((field) => (
-                <div key={field.key}>
-                  <dt>{field.label}</dt>
-                  <dd>{field.children}</dd>
-                </div>
-              ))}
-            </dl>
-          }
-        >
-          <Button
-            label="工单信息"
-            icon={<Info size={16} />}
-            isIconOnly
-            variant="ghost"
-          />
-        </Popover>
-        <div className="action-row ui-order-compact-actions">{actions}</div>
-      </header>
-    );
   return (
-    <header className="order-header detail-order-header">
-      <nav className="ui-breadcrumb" aria-label="当前位置">
-        <Link to={queueContext?.url ?? `/queue/${group}`}>
-          <ArrowLeft size={14} aria-hidden="true" />
-          {group === "approval" ? "审批" : TYPE_LABELS[w.type]}工单
-        </Link>
-        <span aria-hidden="true">/</span>
-        <span aria-current="page">{w.id}</span>
-      </nav>
-      <Panel className="detail-hero">
-        <div className="detail-hero-top">
-          <div className="detail-identity">
-            <div className="detail-icon" aria-hidden="true">
-              <Building2 size={24} />
-            </div>
-            <div className="detail-identity-copy">
-              <div className="detail-kicker">
-                <span>
-                  {group === "approval" ? "审批" : TYPE_LABELS[w.type]}详情
-                </span>
-                <IdText value={w.id} />
-                {merchantTradingName(m.legalName, m.displayName) && (
-                  <span>{m.displayName}</span>
-                )}
+    <header className="order-header ui-order-compact detail-compact-header">
+      <Link
+        to={queueContext?.url ?? `/queue/${group}`}
+        className="ui-order-back"
+        aria-label="返回队列"
+        title="返回队列"
+      >
+        <ArrowLeft size={16} />
+      </Link>
+      <span className="ui-order-kind">{orderType}</span>
+      <Tooltip content={m.legalName}>
+        <h1 tabIndex={0} className="ui-order-compact-name">
+          {m.legalName}
+        </h1>
+      </Tooltip>
+      <StatusBadge status={w.status} />
+      {w.priority === "HIGH" && (
+        <span className="priority-high">
+          <Badge tone="danger">高</Badge>
+        </span>
+      )}
+      <span className="ui-order-compact-id">
+        <IdText value={w.id} />
+      </span>
+      <span className="ui-order-compact-sla">
+        <Sla order={w} />
+      </span>
+      <Popover
+        label="工单信息"
+        closeButtonLabel="关闭工单信息"
+        placement="below"
+        width="min(400px, calc(100vw - 32px))"
+        content={
+          <dl className="ui-order-details ui-order-popover-details">
+            {fields.map((field) => (
+              <div key={field.key}>
+                <dt>{field.label}</dt>
+                <dd>{field.children}</dd>
               </div>
-              <div className="detail-name-row">
-                <h1>{m.legalName}</h1>
-                <StatusBadge status={w.status} />
-                {w.priority === "HIGH" && <Badge tone="danger">高</Badge>}
-                {a.isKeyMerchant && <Badge>重点商户</Badge>}
-                {w.type === "CHANNEL" && <Badge>{STAGE_LABELS[w.stage]}</Badge>}
-              </div>
-            </div>
-          </div>
-          <div className="action-row detail-header-actions">
-            {actions}
-            <Popover
-              label="工单信息"
-              closeButtonLabel="关闭工单信息"
-              placement="below"
-              alignment="end"
-              width="min(400px, calc(100vw - 32px))"
-              content={
-                <dl className="ui-order-details ui-order-popover-details">
-                  {fields.map((field) => (
-                    <div key={field.key}>
-                      <dt>{field.label}</dt>
-                      <dd>{field.children}</dd>
-                    </div>
-                  ))}
-                </dl>
-              }
-            >
-              <Button
-                label="工单信息"
-                icon={<Info size={16} />}
-                variant="ghost"
-              />
-            </Popover>
-          </div>
-        </div>
-        <dl className="detail-meta-grid">
-          <div>
-            <dt>关联申请</dt>
-            <dd>
-              <Link to={`/applications/${a.id}`}>{a.id}</Link>
-            </dd>
-          </div>
-          <div>
-            <dt>
-              {w.type === "SUPPLEMENT"
-                ? "商户截止"
-                : w.type === "CHANNEL"
-                  ? "提交渠道"
-                  : "当前环节"}
-            </dt>
-            <dd>
-              {w.type === "SUPPLEMENT"
-                ? deadlineDate(w.dueAt, m.country)
-                : w.type === "CHANNEL"
-                  ? (channel?.channelName ?? "—")
-                  : (STAGE_LABELS[w.stage] ?? w.stage)}
-            </dd>
-          </div>
-          <div>
-            <dt>处理人</dt>
-            <dd>{w.assignee ? <PersonName user={w.assignee} /> : "待领取"}</dd>
-          </div>
-          <div>
-            <dt>SLA 剩余</dt>
-            <dd>
-              {["CLOSED", "DONE", "CLOSED_NO_RESPONSE", "WITHDRAWN"].includes(
-                w.status,
-              ) ? (
-                "已结束"
-              ) : (
-                <Sla order={w} />
-              )}
-            </dd>
-          </div>
-        </dl>
-      </Panel>
+            ))}
+          </dl>
+        }
+      >
+        <Button
+          label="工单信息"
+          icon={<Info size={16} />}
+          isIconOnly
+          variant="ghost"
+        />
+      </Popover>
+      {actions && (
+        <div className="action-row ui-order-compact-actions">{actions}</div>
+      )}
     </header>
   );
 }
@@ -1102,6 +1030,7 @@ export function Timeline({ audit }: { audit: AuditLog[] }) {
 export function FileUpload({
   value,
   onChange,
+  onReadingChange,
   disabled,
   accept,
   maxCount,
@@ -1110,6 +1039,7 @@ export function FileUpload({
 }: {
   value: UploadedFile[];
   onChange: (files: UploadedFile[]) => void;
+  onReadingChange?: (reading: boolean) => void;
   disabled?: boolean;
   accept?: string;
   maxCount?: number;
@@ -1122,12 +1052,51 @@ export function FileUpload({
   const [preview, setPreview] = useState<UploadedFile>();
   const [reading, setReading] = useState(false);
   const [error, setError] = useState("");
+  const mounted = useRef(true);
+  const readingChange = useRef(onReadingChange);
+  readingChange.current = onReadingChange;
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      readingChange.current?.(false);
+    };
+  }, []);
   const readFiles = async (selected: File | File[] | null) => {
     if (!selected || disabled || reading) return;
     const files = Array.isArray(selected) ? selected : [selected];
     setReading(true);
+    readingChange.current?.(true);
     setError("");
     try {
+      const accepted = accept
+        ?.toLowerCase()
+        .split(",")
+        .map((type) => type.trim())
+        .filter(Boolean);
+      for (const file of files) {
+        if (!file.size)
+          throw new Error(
+            english
+              ? `${file.name} is empty. Choose a non-empty file.`
+              : `${file.name} 是空文件，请重新选择材料。`,
+          );
+        if (
+          accepted?.length &&
+          !accepted.some((type) =>
+            type.startsWith(".")
+              ? file.name.toLowerCase().endsWith(type)
+              : type.endsWith("/*")
+                ? file.type.toLowerCase().startsWith(type.slice(0, -1))
+                : file.type.toLowerCase() === type,
+          )
+        )
+          throw new Error(
+            english
+              ? `${file.name}: supported formats are ${accept}.`
+              : `${file.name} 格式不支持，请选择 ${accept}。`,
+          );
+      }
       const loaded = await Promise.all(
         files.map(
           (file) =>
@@ -1168,12 +1137,14 @@ export function FileUpload({
             }),
         ),
       );
+      if (!mounted.current) return;
       onChange(
         maxCount
           ? [...value, ...loaded].slice(-maxCount)
           : [...value, ...loaded],
       );
     } catch (cause) {
+      if (!mounted.current) return;
       setError(
         cause instanceof Error
           ? cause.message
@@ -1182,7 +1153,10 @@ export function FileUpload({
             : "无法读取文件",
       );
     } finally {
-      setReading(false);
+      if (mounted.current) {
+        setReading(false);
+        readingChange.current?.(false);
+      }
     }
   };
   return (

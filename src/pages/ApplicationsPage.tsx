@@ -22,7 +22,7 @@ import { COMPLIANCE_ROLES, OPS_ROLES } from "../access";
 import { COLUMN_DEFINITIONS, getApplicationColumns } from "../columns";
 import { useAsync, useSession } from "../hooks";
 import { statusLabel } from "../format";
-import { Empty, LoadState, PageHeading, Panel } from "../ui";
+import { Empty, LoadState, PageHeading } from "../ui";
 import type { ApplicationFilters, ApplicationRow } from "../types";
 import "./progress-pages.css";
 
@@ -64,7 +64,7 @@ function ApplicationFiltersForm({
       : null;
   return (
     <form
-      className="progress-query-form"
+      className="list-toolbar progress-query-form"
       onSubmit={(event) => {
         event.preventDefault();
         onApply(draft);
@@ -76,7 +76,7 @@ function ApplicationFiltersForm({
         onChange={(value) => set("search", value)}
         hasClear
         placeholder="申请号、商户名称、注册号"
-        className="progress-search-field"
+        className="list-search progress-search-field"
       />
       <Selector
         label="注册地"
@@ -169,7 +169,7 @@ function ApplicationFiltersForm({
           placeholder="渠道名称"
         />
       )}
-      <div className="row progress-filter-actions">
+      <div className="list-toolbar-actions progress-filter-actions">
         <Button label="查询" variant="primary" type="submit" />
         <Button
           label="重置"
@@ -280,60 +280,58 @@ function ApplicationResults({
   };
   return (
     <div ref={root} className="progress-results">
-      <Panel
-        title="申请列表"
-        subtitle={`共 ${rows.length} 笔申请`}
-        actions={
-          <div className="row progress-table-tools">
-            <Selector
-              label="密度"
-              isLabelHidden
-              value={density}
-              onChange={(value) => setDensity(value as typeof density)}
-              options={[
-                { value: "compact", label: "紧凑" },
-                { value: "balanced", label: "标准" },
-                { value: "spacious", label: "宽松" },
-              ]}
-            />
-            <MultiSelector
-              label="显示列"
-              isLabelHidden
-              value={activeColumnKeys}
-              formatValue={(items) => `已选 ${items.length} 列`}
-              onChange={(keys) =>
-                setActiveColumnKeys([
-                  "C03",
-                  ...keys.filter((key) => key !== "C03"),
-                ])
-              }
-              options={columns.map((column) => ({
-                value: column.key,
-                label: String(column.header),
-              }))}
-            />
-            <Button
-              label="重置列"
-              variant="ghost"
-              onClick={() =>
-                setActiveColumnKeys(columns.map((column) => column.key))
-              }
-            />
-            <Button label="刷新" variant="ghost" onClick={reload} />
-            <Button
-              label="全屏"
-              variant="ghost"
-              onClick={() => {
-                if (document.fullscreenElement) void document.exitFullscreen();
-                else void root.current?.requestFullscreen();
-              }}
-            />
-          </div>
-        }
-      >
+      <div className="list-toolbar">
+        <div className="list-toolbar-actions progress-table-tools">
+          <Selector
+            label="密度"
+            isLabelHidden
+            value={density}
+            onChange={(value) => setDensity(value as typeof density)}
+            options={[
+              { value: "compact", label: "紧凑" },
+              { value: "balanced", label: "标准" },
+              { value: "spacious", label: "宽松" },
+            ]}
+          />
+          <MultiSelector
+            label="显示列"
+            isLabelHidden
+            value={activeColumnKeys}
+            formatValue={(items) => `已选 ${items.length} 列`}
+            onChange={(keys) =>
+              setActiveColumnKeys([
+                "C03",
+                ...keys.filter((key) => key !== "C03"),
+              ])
+            }
+            options={columns.map((column) => ({
+              value: column.key,
+              label: String(column.header),
+            }))}
+          />
+          <Button
+            label="重置列"
+            variant="ghost"
+            onClick={() =>
+              setActiveColumnKeys(columns.map((column) => column.key))
+            }
+          />
+          <Button label="刷新" variant="ghost" onClick={reload} />
+          <Button
+            label="全屏"
+            variant="ghost"
+            onClick={() => {
+              if (document.fullscreenElement) void document.exitFullscreen();
+              else void root.current?.requestFullscreen();
+            }}
+          />
+        </div>
+      </div>
+      <div className="list-results">
         {rows.length ? (
           <Table<Row>
             aria-label="申请列表"
+            className={`density-${density}`}
             data={
               sorted.slice(
                 (currentPage - 1) * pageSize,
@@ -361,7 +359,16 @@ function ApplicationResults({
             description="请调整筛选条件。"
           />
         )}
-      </Panel>
+      </div>
+      <div className="list-summary">
+        <span>共 {rows.length} 笔申请</span>
+        {rows.length > 0 && (
+          <span>
+            显示 {(currentPage - 1) * pageSize + 1}–
+            {Math.min(currentPage * pageSize, rows.length)} 笔
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -396,25 +403,26 @@ export default function ApplicationsPage() {
     [filterKey, session.role, session.userId],
   );
   return (
-    <div className="page stack progress-pages">
-      <PageHeading title="申请查询" />
-      <Panel>
-        <ApplicationFiltersForm
-          key={`${session.role}:${filterKey}`}
-          filters={filters}
-          risk={risk}
-          ops={ops}
-          onApply={(values) =>
-            setParams(
-              Object.fromEntries(
-                Object.entries(values)
-                  .filter(([, value]) => value !== undefined && value !== "")
-                  .map(([key, value]) => [key, String(value)]),
-              ),
-            )
-          }
-        />
-      </Panel>
+    <div className="page stack progress-pages workbench-list">
+      <PageHeading
+        title="申请查询"
+        metadata={data ? `${data.length} 笔申请` : undefined}
+      />
+      <ApplicationFiltersForm
+        key={`${session.role}:${filterKey}`}
+        filters={filters}
+        risk={risk}
+        ops={ops}
+        onApply={(values) =>
+          setParams(
+            Object.fromEntries(
+              Object.entries(values)
+                .filter(([, value]) => value !== undefined && value !== "")
+                .map(([key, value]) => [key, String(value)]),
+            ),
+          )
+        }
+      />
       <LoadState loading={loading} error={error} retry={reload}>
         <ApplicationResults
           key={`${session.role}:${filterKey}`}

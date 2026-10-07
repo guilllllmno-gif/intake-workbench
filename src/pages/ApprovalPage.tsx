@@ -38,7 +38,7 @@ import {
 import { CHECK_OPTIONS, DECLINE_CONCLUSIONS, reasonName } from "../catalog";
 import { dateTime, money } from "../format";
 import EvidencePanel, { emptyEvidenceDraft } from "../components/EvidencePanel";
-import type { ApprovalConditions, CheckItem } from "../types";
+import type { ApprovalConditions, ApprovalDecision, CheckItem } from "../types";
 import "./decision-pages.css";
 
 const decisionLabels: Record<string, string> = {
@@ -123,9 +123,10 @@ function Snapshot({ id }: { id: string }) {
 }
 
 export default function ApprovalPage() {
-  const { data, loading, error, reload, busy, act, stale } = useOrder();
+  const { data, loading, error, mutationError, reload, busy, act, stale } =
+    useOrder();
   const { session } = useSession();
-  const { next } = useQueueFlow();
+  const queueFlow = useQueueFlow();
   const [view, setView] = useDetailView("risk", [
     "risk",
     "evidence",
@@ -198,9 +199,9 @@ export default function ApprovalPage() {
     order.overrideAutoReject ||
     exceedsHighest,
   );
-  const first = data.approvalDecisions?.find((entry) =>
-    entry.approvers.some((user) => user.id === actors[0]),
-  );
+  let first: ApprovalDecision | undefined;
+  for (const entry of data.approvalDecisions || [])
+    if (entry.approvers.some((user) => user.id === actors[0])) first = entry;
   const blocked =
     session.role !== "APPROVER"
       ? "仅审批人可以提交审批"
@@ -237,7 +238,11 @@ export default function ApprovalPage() {
       "reviewDays",
     ].every((key) => {
       const value = conditions[key as keyof ApprovalConditions];
-      return value !== undefined && Number.isFinite(value) && value > 0;
+      return (
+        value !== undefined &&
+        Number.isFinite(value) &&
+        (key === "reservePct" || key === "reserveDays" ? value >= 0 : value > 0)
+      );
     }) &&
     (conditions.reservePct ?? 101) <= 100 &&
     (conditions.singleLimit ?? Infinity) <= (conditions.monthlyLimit ?? 0) &&
@@ -245,12 +250,7 @@ export default function ApprovalPage() {
     Number.isInteger(conditions.reviewDays);
   const valid =
     !blocked &&
-    (!(
-      decision === "APPROVED" ||
-      decision === "APPROVED_WITH_CONDITIONS" ||
-      decision === "DECLINED"
-    ) ||
-      !authorityBlock) &&
+    (decision === "RETURN" || !authorityBlock) &&
     (decision === "APPROVED" || Boolean(reason.trim())) &&
     (decision !== "APPROVED_WITH_CONDITIONS" || conditionsValid);
   const choose = (value: string) => {
@@ -259,21 +259,26 @@ export default function ApprovalPage() {
     setConditions({});
   };
   const submit = async () => {
-    if (!valid) return;
+    if (!valid) return null;
     const result = await act("approval", {
       decision,
       reason: reason.trim(),
       ...(decision === "APPROVED_WITH_CONDITIONS" ? { conditions } : {}),
     });
     if (result) setDecision("");
-    if (
-      result?.workOrder.status === "CLOSED" ||
-      result?.workOrder.status === "IN_PROGRESS"
-    )
-      await next(order.id);
+    return result;
   };
   const firstDual =
     dual && !waitingSecond && !["RETURN", "DISAGREE"].includes(decision);
+  const outcome =
+    waitingSecond && !["RETURN", "DISAGREE"].includes(decision)
+      ? decision === "DECLINED" || first?.decision === "DECLINED"
+        ? "DECLINED"
+        : decision === "APPROVED_WITH_CONDITIONS" ||
+            first?.decision === "APPROVED_WITH_CONDITIONS"
+          ? "APPROVED_WITH_CONDITIONS"
+          : decision
+      : decision;
   const description =
     decision === "RETURN"
       ? "工单从待审批回到处理中，退回原合规审核员；审批说明将写入记录。"
@@ -281,15 +286,15 @@ export default function ApprovalPage() {
         ? "撤回待确认意见，工单仍为待审批，交回第一位审批人重新决定。"
         : firstDual
           ? "保存第一审批意见，复核进度更新为 1/2；另一位审批人确认前，申请不进入渠道进件。"
-          : decision === "DECLINED"
-            ? "工单结案为拒绝，申请变为未通过；记录内部拒绝原因，并发送通用拒绝通知。"
-            : decision === "APPROVED_WITH_CONDITIONS"
-              ? "工单结案为附条件通过，申请进入渠道进件；单笔限额、月限额、准备金与复审条件写入商户配置。"
+          : outcome === "DECLINED"
+            ? "工单结案为拒绝，申请变为未通过；保留两位审批人的内部意见。"
+            : outcome === "APPROVED_WITH_CONDITIONS"
+              ? "工单结案为附条件通过，申请进入渠道进件；以最后一位提交附条件意见的审批条件写入商户配置。"
               : "工单结案为通过，申请进入渠道进件。";
   const external =
     firstDual || ["RETURN", "DISAGREE"].includes(decision)
       ? "审核中"
-      : decision === "DECLINED"
+      : outcome === "DECLINED"
         ? "未通过：很抱歉，您的申请未通过审核。"
         : "已通过，渠道进件中";
   const columns: TableColumn<CheckItem & Record<string, unknown>>[] = [
@@ -351,17 +356,16 @@ export default function ApprovalPage() {
         item.snapshotId ? <IdText value={item.snapshotId} /> : "—",
     },
   ];
-  const action = (value: string, primary = false) => {
+  const action = (value: string) => {
     const unavailable =
       blocked ||
-      ((!order.assignee || !["RETURN", "DISAGREE"].includes(value)) &&
-        authorityBlock) ||
+      ((!order.assignee || value !== "RETURN") && authorityBlock) ||
       "";
     return (
       <Button
         key={value}
         label={decisionLabels[value]}
-        variant={primary ? "primary" : "secondary"}
+        variant="secondary"
         className={value === "DECLINED" ? "dv-danger-action" : undefined}
         tooltip={unavailable || undefined}
         isDisabled={Boolean(unavailable) || busy}
@@ -373,10 +377,27 @@ export default function ApprovalPage() {
   };
   return (
     <div className="page dv-page detail-page dv-decision-page">
-      <OrderHeader data={data} />
+      <OrderHeader
+        data={data}
+        actions={
+          order.status === "CLOSED" || order.status === "IN_PROGRESS" ? (
+            <Button
+              label="领取下一单"
+              variant="primary"
+              isLoading={queueFlow.busy}
+              onClick={() => void queueFlow.next(order.id)}
+            />
+          ) : undefined
+        }
+      />
       {error && (
         <div className="dv-notice dv-error" role="alert">
           {error.message}
+        </div>
+      )}
+      {mutationError && !decision && (
+        <div className="dv-notice dv-error" role="alert">
+          {mutationError}
         </div>
       )}
       {stale && (
@@ -589,9 +610,19 @@ export default function ApprovalPage() {
         <aside className="detail-aside dv-decision-aside">
           <OrderSummary data={data} title="当前审批">
             <div className="dv-stack">
+              {order.status === "CLOSED" && (
+                <div className="dv-notice" role="status">
+                  审批结果：
+                  {decisionLabels[order.outcome || ""] ||
+                    order.outcome ||
+                    "已结束"}
+                  <br />
+                  申请当前状态：{data.application.externalStatus}
+                </div>
+              )}
               {exceedsHighest && (
                 <div className="dv-notice dv-warning">
-                  预估月交易额超出最高授权档，须两位最高档高级管理层审批人确认。
+                  预估月交易额超出最高授权档 · 需要双人最高档高级管理层审批。
                 </div>
               )}
               {(dual || waitingSecond) && (
@@ -606,66 +637,55 @@ export default function ApprovalPage() {
                       />
                       <Badge
                         tone={
-                          (order.pendingDecision || first.decision) ===
-                          "DECLINED"
-                            ? "danger"
-                            : "neutral"
+                          first.decision === "DECLINED" ? "danger" : "neutral"
                         }
                       >
-                        {decisionLabels[
-                          order.pendingDecision || first.decision
-                        ] || "—"}
+                        {decisionLabels[first.decision] || "—"}
                       </Badge>
                     </>
                   )}
                 </div>
               )}
-              <p className="secondary dv-context-copy">
-                {blocked ||
-                  authorityBlock ||
-                  (waitingSecond
-                    ? "核对第一审批意见与证据后，提交复核决定。"
-                    : "核对风险敞口与证据后选择审批结果，提交前可预览影响。")}
-              </p>
-              {session.role === "APPROVER" && (
-                <div
-                  className="detail-context-actions dv-approval-actions"
-                  role="group"
-                  aria-label="审批操作"
-                >
-                  {action("APPROVED", true)}
-                  {action("APPROVED_WITH_CONDITIONS")}
-                  {action("DECLINED")}
-                  {action("RETURN")}
-                  {waitingSecond && action("DISAGREE")}
-                </div>
+              {!dual && !waitingSecond && (
+                <p className="secondary dv-context-copy">复核要求：单人审批</p>
               )}
+              {order.status !== "CLOSED" && (
+                <p className="secondary dv-context-copy">
+                  {blocked ||
+                    authorityBlock ||
+                    (waitingSecond
+                      ? "核对第一审批意见与证据后，提交复核决定。"
+                      : "核对风险敞口与证据后选择审批结果，提交前可预览影响。")}
+                </p>
+              )}
+              {session.role === "APPROVER" &&
+                order.status === "PENDING_APPROVAL" && (
+                  <div
+                    className="detail-context-actions dv-approval-actions"
+                    role="group"
+                    aria-label="审批操作"
+                  >
+                    {action("APPROVED")}
+                    {action("APPROVED_WITH_CONDITIONS")}
+                    {action("DECLINED")}
+                    {action("RETURN")}
+                    {waitingSecond && action("DISAGREE")}
+                  </div>
+                )}
+              <Button
+                label="查看结论与证据"
+                variant="ghost"
+                className="detail-shortcut"
+                onClick={() => setView("evidence")}
+              />
+              <Button
+                label="查看审批记录"
+                variant="ghost"
+                className="detail-shortcut"
+                onClick={() => setView("history")}
+              />
             </div>
           </OrderSummary>
-          <Panel title="审批依据" className="detail-context">
-            <dl className="detail-summary-facts">
-              <div>
-                <dt>预估月交易额</dt>
-                <dd>{money(merchant.expectedMonthlyVolume)}</dd>
-              </div>
-              <div>
-                <dt>复核要求</dt>
-                <dd>{dual ? "双人审批" : "单人审批"}</dd>
-              </div>
-            </dl>
-            <Button
-              label="查看结论与证据"
-              variant="ghost"
-              className="detail-shortcut"
-              onClick={() => setView("evidence")}
-            />
-            <Button
-              label="查看审批记录"
-              variant="ghost"
-              className="detail-shortcut"
-              onClick={() => setView("history")}
-            />
-          </Panel>
         </aside>
       </div>
       <Dialog
@@ -692,7 +712,7 @@ export default function ApprovalPage() {
         sales={
           firstDual || ["RETURN", "DISAGREE"].includes(decision)
             ? "审核中"
-            : decision === "DECLINED"
+            : outcome === "DECLINED"
               ? "未通过"
               : "已通过，渠道进件中"
         }
@@ -705,10 +725,19 @@ export default function ApprovalPage() {
         onConfirm={submit}
         onClose={() => setDecision("")}
         busy={busy}
+        error={mutationError}
         confirmDisabled={!valid}
-        danger={decision === "DECLINED"}
+        danger={outcome === "DECLINED"}
       >
         <div className="dv-stack">
+          {stale && <Button label="刷新工单" onClick={reload} />}
+          {waitingSecond && !["RETURN", "DISAGREE"].includes(decision) && (
+            <div className="dv-notice" role="status">
+              本次意见：{decisionLabels[decision]}；综合两位审批人的最终结果：
+              {decisionLabels[outcome]}
+              。任一人拒绝则最终拒绝，否则保留附条件批准。
+            </div>
+          )}
           {decision === "DECLINED" ? (
             <>
               <div className="dv-danger-selection" role="status">
@@ -725,7 +754,7 @@ export default function ApprovalPage() {
               <dl className="details-grid">
                 <div>
                   <dt>对外类别</dt>
-                  <dd>不符合准入要求</dd>
+                  <dd>按申请原因与披露规则确定，内部审批说明不对外展示</dd>
                 </div>
                 <div>
                   <dt>商户文案</dt>
@@ -771,7 +800,11 @@ export default function ApprovalPage() {
                   isRequired
                   hasClear
                   value={conditions[field.key]}
-                  min={field.key === "reservePct" ? 0.1 : 1}
+                  min={
+                    field.key === "reservePct" || field.key === "reserveDays"
+                      ? 0
+                      : 1
+                  }
                   max={field.key === "reservePct" ? 100 : undefined}
                   step={field.key === "reservePct" ? 0.1 : 1}
                   isIntegerOnly={field.key !== "reservePct"}

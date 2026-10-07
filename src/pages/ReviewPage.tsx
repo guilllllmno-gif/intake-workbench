@@ -7,7 +7,6 @@ import {
 } from "react-router-dom";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
-import { Card } from "@astryxdesign/core/Card";
 import { Dialog } from "@astryxdesign/core/Dialog";
 import { DropdownMenu } from "@astryxdesign/core/DropdownMenu";
 import { RadioList, RadioListItem } from "@astryxdesign/core/RadioList";
@@ -17,6 +16,8 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Clock3,
+  FileText,
   MoreHorizontal,
 } from "lucide-react";
 import { COMPLIANCE_ROLES, orderPath } from "../access";
@@ -60,6 +61,7 @@ import {
   mccName,
   money,
   verificationStatus,
+  statusLabel,
 } from "../format";
 import EvidencePanel, {
   emptyEvidenceDraft,
@@ -120,7 +122,8 @@ const referenceViews = [
   "logs",
 ] as const;
 export default function ReviewPage() {
-  const { data, loading, error, stale, busy, reload, act } = useOrder();
+  const { data, loading, error, stale, busy, reload, act, mutationError } =
+    useOrder();
   const { session } = useSession();
   const notice = useNotice();
   const navigate = useNavigate();
@@ -131,8 +134,8 @@ export default function ReviewPage() {
   const [previewReason, setPreviewReason] = useState("");
   const [outcome, setOutcome] = useState("APPROVED");
   const [supplementOpen, setSupplementOpen] = useState(false);
-  const [referenceOpen, setReferenceOpen] = useState(
-    () => window.innerWidth >= 1366 || params.has("reference"),
+  const [referenceOpen, setReferenceOpen] = useState(() =>
+    params.has("reference"),
   );
   const [referenceTab, setReferenceTab] = useDetailView(
     "application",
@@ -148,7 +151,8 @@ export default function ReviewPage() {
   const [releaseReason, setReleaseReason] = useState("");
   const [draftRevision, setDraftRevision] = useState(0);
   const [draftStorageError, setDraftStorageError] = useState("");
-  const finalAction = useRef<HTMLDivElement>(null);
+  const [filesReading, setFilesReading] = useState(false);
+  const caseActions = useRef<HTMLDivElement>(null);
   const claimContinuation = useRef<(() => void) | null>(null);
   const completedNavigation = useRef(false);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
@@ -169,7 +173,10 @@ export default function ReviewPage() {
         ),
         0,
       );
-    return rank(b) - rank(a);
+    return (
+      Number(b.status === "PENDING") - Number(a.status === "PENDING") ||
+      rank(b) - rank(a)
+    );
   });
   const selected =
     checks.find((item) => item.id === params.get("item")) ??
@@ -233,6 +240,7 @@ export default function ReviewPage() {
     setDraftRevision((value) => value + 1);
   };
   const dirty =
+    filesReading ||
     Object.keys(draftBook).some((id) =>
       checks.some(
         (item) =>
@@ -240,7 +248,8 @@ export default function ReviewPage() {
           item.status === "PENDING" &&
           JSON.stringify(draftBook[id]) !== JSON.stringify(itemDraft(item)),
       ),
-    ) || !!comment.trim();
+    ) ||
+    !!comment.trim();
   const blocker = useBlocker(
     ({ currentLocation, nextLocation }) =>
       dirty &&
@@ -256,6 +265,7 @@ export default function ReviewPage() {
     }
     setPreview(null);
     setSupplementOpen(false);
+    setReferenceOpen(params.has("reference"));
     claimContinuation.current = null;
   }, [draftPrefix]);
   useEffect(() => {
@@ -330,17 +340,14 @@ export default function ReviewPage() {
   );
   const queueIndex = queueIds.indexOf(order?.id ?? "");
   const pending = checks.filter((item) => item.status === "PENDING");
+  const activeSupplements = (data?.supplements ?? []).filter(
+    (supplement) =>
+      !["DONE", "CLOSED_NO_RESPONSE", "WITHDRAWN"].includes(supplement.status),
+  );
   const submittedNeeds = new Set(
-    (data?.supplements ?? [])
-      .filter(
-        (supplement) =>
-          !["DONE", "CLOSED_NO_RESPONSE", "WITHDRAWN"].includes(
-            supplement.status,
-          ),
-      )
-      .flatMap((supplement) =>
-        (supplement.items ?? []).map((item) => item.checkItemId),
-      ),
+    activeSupplements.flatMap((supplement) =>
+      (supplement.items ?? []).map((item) => item.checkItemId),
+    ),
   );
   const unsubmittedSupplement = checks.some(
     (item) =>
@@ -380,12 +387,17 @@ export default function ReviewPage() {
         : order?.status !== "IN_PROGRESS"
           ? "当前状态不可修改检查项结论"
           : "";
-  const selectItem = (id: string) =>
+  const selectItem = (id: string) => {
+    if (filesReading) {
+      notice("材料正在读取，请等待完成后切换检查项。");
+      return;
+    }
     setParams((current) => {
       const next = new URLSearchParams(current);
       next.set("item", id);
       return next;
     });
+  };
   useEffect(() => {
     if (selected && params.get("item") !== selected.id)
       setParams(
@@ -509,27 +521,18 @@ export default function ReviewPage() {
       });
     else void queueFlow.next(order?.id);
   };
-  const completeCase = async (result: OrderDetail | null) => {
+  const completeCase = (result: OrderDetail | null) => {
     if (!result) return false;
-    const remainingDrafts =
-      !!comment.trim() ||
-      result.workOrder.checkItems?.some(
-        (item) => item.status === "PENDING" && !!draftBook[item.id],
-      );
-    if (remainingDrafts)
-      setSessionLeave(() => () => {
-        void queueFlow.next(result.workOrder.id).finally(() => {
-          completedNavigation.current = false;
-        });
-      });
-    else {
-      completedNavigation.current = true;
-      try {
-        await queueFlow.next(result.workOrder.id);
-      } finally {
-        completedNavigation.current = false;
-      }
-    }
+    const current = result.workOrder;
+    notice(
+      current.status === "WAITING_SUPPLEMENT"
+        ? "补件需求已提交，可在本页查看运营跟进进度。"
+        : current.status === "PENDING_APPROVAL"
+          ? "已提交审批，等待审批人处理。"
+          : current.status === "COMPLIANCE_HOLD"
+            ? "已转受限，由合规负责人继续处置。"
+            : `本单处理已保存 · ${statusLabel(current.outcome || current.status)}`,
+    );
     return true;
   };
   const openPreview = (value: Preview) => {
@@ -544,8 +547,10 @@ export default function ReviewPage() {
     if (next) selectItem(next.id);
     else
       requestAnimationFrame(() =>
-        finalAction.current
-          ?.querySelector<HTMLButtonElement>("button")
+        caseActions.current
+          ?.querySelector<HTMLButtonElement>(
+            'button[data-variant="primary"]:not([aria-disabled="true"]):not(:disabled)',
+          )
           ?.focus(),
       );
   };
@@ -573,7 +578,14 @@ export default function ReviewPage() {
       },
     });
   const submitItem = () => {
-    if (!selected || !editable || !selectedPending || needsEscalation) return;
+    if (
+      !selected ||
+      !editable ||
+      !selectedPending ||
+      needsEscalation ||
+      filesReading
+    )
+      return;
     let finalConclusion = conclusion,
       finalReason = reason;
     const fail = (message: string, expand = false) => {
@@ -840,14 +852,97 @@ export default function ReviewPage() {
     { value: "history", label: "历史" },
     { value: "logs", label: "日志" },
   ];
+  const openReference = (tab?: (typeof referenceViews)[number]) => {
+    if (tab) setReferenceTab(tab);
+    setReferenceOpen(true);
+  };
+  const waitingSupplement = order.status === "WAITING_SUPPLEMENT";
+  const closed = ["CLOSED", "DONE", "CLOSED_NO_RESPONSE", "WITHDRAWN"].includes(
+    order.status,
+  );
+  const claimable = eligible && !order.assignee && order.status === "QUEUED";
+  const workflow = (() => {
+    if (waitingSupplement)
+      return {
+        title: "补件处理中，暂不提交整单",
+        description:
+          "已记录的单项结论保留。补交材料完成齐套检查后，再继续审核；单项已完成不代表整单通过。",
+        tone: "warning",
+      };
+    if (order.status === "PENDING_APPROVAL")
+      return {
+        title: "已提交审批",
+        description: "等待审批人按授权处置，当前审核结论与证据仅供查看。",
+        tone: "info",
+      };
+    if (order.status === "COMPLIANCE_HOLD" || data.restrictedLocked)
+      return {
+        title: "已转受限处置",
+        description: "审核已暂停，由合规负责人完成受限处置后决定下一步。",
+        tone: "warning",
+      };
+    if (closed)
+      return {
+        title: `审核已结束${order.outcome && resultNames[order.outcome] ? ` · ${resultNames[order.outcome]}` : ""}`,
+        description:
+          "本页为处理记录，不能直接修改原结论；历史与证据快照仍可查看。",
+        tone: "neutral",
+      };
+    if (!eligible || (!owner && !claimable))
+      return {
+        title: "只读查看",
+        description: readOnlyReason,
+        tone: "neutral",
+      };
+    if (claimable)
+      return {
+        title: "待领取审核",
+        description: "可先查看差异与证据，领取后再记录审核结论。",
+        tone: "neutral",
+      };
+    if (needsEscalation)
+      return {
+        title: "需要转受限处置",
+        description: "名单结论涉及真命中或无法判断，请确认转受限后继续。",
+        tone: "warning",
+      };
+    if (pending.length)
+      return {
+        title: `${pending.length} 项待判断`,
+        description:
+          "先核对差异与依据，再记录本项结论；完成全部检查后提交整单。",
+        tone: "neutral",
+      };
+    if (unsubmittedSupplement)
+      return {
+        title: "检查已记录，待提交补件需求",
+        description: "请将需补充的材料交由运营跟进，当前不能确认整单结果。",
+        tone: "warning",
+      };
+    if (missingEvidence.length && suggested !== "DECLINED")
+      return {
+        title: "证据尚未齐备",
+        description: "当前不能通过，请核对缺失证据并按实际情况处理。",
+        tone: "warning",
+      };
+    return {
+      title: "检查已完成，待确认整单结果",
+      description: `当前建议${resultNames[suggested]}。提交前将展示对商户、销售和后续流程的影响。`,
+      tone: "success",
+    };
+  })();
   const finalizeBlockReason = !canFinalize
-    ? needsEscalation
-      ? "请先转受限"
-      : unsubmittedSupplement
-        ? "请先提补件需求"
-        : missingEvidence.length && suggested !== "DECLINED"
-          ? "证据未齐，不能通过"
-          : "请完成所有检查项"
+    ? !editable
+      ? readOnlyReason || "正在保存，请稍候"
+      : needsEscalation
+        ? "请先转受限"
+        : pending.length
+          ? `还有 ${pending.length} 项待判断`
+          : unsubmittedSupplement
+            ? "请先提补件需求"
+            : missingEvidence.length && suggested !== "DECLINED"
+              ? "证据未齐，不能通过"
+              : "请完成所有检查项"
     : undefined;
   return (
     <div className="review-workspace detail-page">
@@ -856,44 +951,14 @@ export default function ReviewPage() {
           data={data}
           actions={
             <div className="row rv-header-actions">
-              {canClaim && (
+              {!data.restrictedLocked && (
                 <Button
-                  label="领取"
-                  variant="primary"
-                  isLoading={busy}
-                  tooltip="领取后可提交审核结论"
-                  onClick={() => requestClaim()}
+                  label="资料与记录"
+                  variant="secondary"
+                  icon={<FileText size={16} />}
+                  aria-haspopup="dialog"
+                  onClick={() => openReference()}
                 />
-              )}
-              {eligible && owner && order.status === "IN_PROGRESS" && (
-                <>
-                  <div ref={finalAction}>
-                    <Button
-                      label={
-                        suggested === "PENDING_APPROVAL" ? "提交审批" : "结案"
-                      }
-                      variant={pending.length === 0 ? "primary" : "secondary"}
-                      isDisabled={!canFinalize}
-                      tooltip={
-                        finalizeBlockReason || "打开后果预览 · Ctrl + Enter"
-                      }
-                      onClick={finalize}
-                    />
-                  </div>
-                  <Button
-                    label="提补件需求"
-                    isDisabled={!editable || needsEscalation || !checks.length}
-                    tooltip={
-                      readOnlyReason ||
-                      (needsEscalation
-                        ? "请先转受限"
-                        : !checks.length
-                          ? "有待补充的检查项后可用"
-                          : "向运营提交补件需求")
-                    }
-                    onClick={() => setSupplementOpen(true)}
-                  />
-                </>
               )}
               <Button
                 label="上一单"
@@ -926,6 +991,7 @@ export default function ReviewPage() {
                   title="释放后工单回到待领取队列"
                   confirmLabel="确认释放"
                   busy={busy}
+                  error={mutationError}
                   disabled={stale}
                   confirmDisabled={!releaseReason.trim()}
                   content={
@@ -958,6 +1024,7 @@ export default function ReviewPage() {
                     title="选择处理人并确认指派"
                     confirmLabel="确认指派"
                     busy={busy}
+                    error={mutationError}
                     disabled={stale}
                     confirmDisabled={!assigneeId}
                     content={
@@ -1015,6 +1082,25 @@ export default function ReviewPage() {
           }
         />
       </header>
+      <section
+        className="rv-workflow-context"
+        data-tone={workflow.tone}
+        aria-label="当前审核状态"
+      >
+        <div>
+          <h2 className="rv-workflow-title">{workflow.title}</h2>
+          <p className="rv-workflow-description">{workflow.description}</p>
+        </div>
+        {needsEscalation && editable && (
+          <div className="rv-workflow-actions">
+            <Button
+              label="转受限"
+              variant="destructive"
+              onClick={() => escalationPreview()}
+            />
+          </div>
+        )}
+      </section>
       <div className="rv-banners">
         {draftStorageError && (
           <Banner status="warning" title={draftStorageError} />
@@ -1100,32 +1186,13 @@ export default function ReviewPage() {
             title={`证据未齐：${missingEvidence.map(reasonName).join("、")}。仅可拒绝或提补件需求。`}
           />
         )}
-        {needsEscalation && order.status === "IN_PROGRESS" && (
-          <Banner
-            status="warning"
-            container="section"
-            title="筛查结论须转受限后才能继续"
-            endContent={
-              editable && (
-                <Button
-                  label="转受限"
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => escalationPreview()}
-                />
-              )
-            }
-          />
-        )}
       </div>
       {data.restrictedLocked ? (
         <div className="rv-locked">
           <Empty title="已转受限" />
         </div>
       ) : (
-        <div
-          className={`rv-grid ${referenceOpen ? "" : "rv-reference-collapsed"}`}
-        >
+        <div className="rv-grid">
           <aside className="rv-checklist" aria-label="检查项清单">
             <div className="rv-check-progress">
               <div className="spread">
@@ -1142,7 +1209,11 @@ export default function ReviewPage() {
               <span className="secondary">
                 {pending.length
                   ? `还有 ${pending.length} 项待判断`
-                  : "检查项已完成 · 请确认整单结果"}
+                  : waitingSupplement
+                    ? "单项已记录 · 补件处理中"
+                    : canFinalize
+                      ? "检查已完成 · 待整单确认"
+                      : "单项结论已记录"}
               </span>
             </div>
             {[
@@ -1151,84 +1222,94 @@ export default function ReviewPage() {
                 items: sortedChecks.filter((item) => item.status === "PENDING"),
               },
               {
-                label: "已结论",
+                label: "已记录",
                 items: sortedChecks.filter((item) => item.status !== "PENDING"),
               },
-            ].map((group) => (
-              <section key={group.label}>
-                <h2 className="rv-group-title">
-                  {group.label}
-                  <Badge>{group.items.length}</Badge>
-                </h2>
-                {group.items.map((item) => (
-                  <div
-                    key={item.id}
-                    ref={item.id === selected?.id ? selectedElement : undefined}
-                  >
-                    <Button
-                      label={
-                        item.reasonCodes.map(reasonName).join("、") ||
-                        item.title
+            ]
+              .filter((group) => group.items.length > 0)
+              .map((group) => (
+                <section key={group.label}>
+                  <h2 className="rv-group-title">
+                    {group.label}
+                    <Badge>{group.items.length}</Badge>
+                  </h2>
+                  {group.items.map((item) => (
+                    <div
+                      key={item.id}
+                      ref={
+                        item.id === selected?.id ? selectedElement : undefined
                       }
-                      width="100%"
-                      variant="ghost"
-                      className={`rv-check-row ${item.id === selected?.id ? "is-selected" : ""}`}
-                      tooltip="切换检查项 · J 下一项 / K 上一项"
-                      onClick={() => selectItem(item.id)}
-                      aria-pressed={item.id === selected?.id}
                     >
-                      <span className="rv-check-copy">
-                        <span className="rv-check-title">
-                          <span>
-                            {item.reasonCodes.map(reasonName).join("、") ||
-                              item.title}
+                      <Button
+                        label={
+                          item.reasonCodes.map(reasonName).join("、") ||
+                          item.title
+                        }
+                        width="100%"
+                        variant="ghost"
+                        className={`rv-check-row${item.id === selected?.id ? " is-selected" : ""}${item.status !== "PENDING" ? " is-recorded" : ""}`}
+                        tooltip="切换检查项 · J 下一项 / K 上一项"
+                        onClick={() => selectItem(item.id)}
+                        aria-pressed={item.id === selected?.id}
+                      >
+                        <span className="rv-check-copy">
+                          <span className="rv-check-title">
+                            <span>
+                              {item.reasonCodes.map(reasonName).join("、") ||
+                                item.title}
+                            </span>
+                            {item.status !== "PENDING" &&
+                              (SUPPLEMENT_CONCLUSIONS[item.conclusion ?? ""] ? (
+                                <Clock3 size={15} aria-label="需补充材料" />
+                              ) : (
+                                <CheckCircle2 size={15} aria-label="已记录" />
+                              ))}
+                          </span>
+                          <span className="rv-check-meta">
+                            {CHECK_LABELS[item.checkType]}
                           </span>
                           {item.status !== "PENDING" && (
-                            <CheckCircle2 size={15} aria-label="已结论" />
+                            <span
+                              className={`rv-check-decision ${DECLINE_CONCLUSIONS[item.conclusion ?? ""] ? "rv-danger" : ""}`}
+                            >
+                              {CHECK_OPTIONS[item.checkType].find(
+                                (option) => option.value === item.conclusion,
+                              )?.label ?? "自动结论"}
+                              {item.conclusionReason &&
+                                ` · ${item.conclusionReason}`}
+                            </span>
+                          )}
+                          {item.hasNewEvidence && (
+                            <Badge tone="info">新材料</Badge>
                           )}
                         </span>
-                        <span className="rv-check-meta">
-                          {CHECK_LABELS[item.checkType]} ·{" "}
-                          {item.reasonCodes.join("、")}
-                        </span>
-                        {item.status !== "PENDING" && (
-                          <span
-                            className={`rv-check-decision ${DECLINE_CONCLUSIONS[item.conclusion ?? ""] ? "rv-danger" : ""}`}
-                          >
-                            {CHECK_OPTIONS[item.checkType].find(
-                              (option) => option.value === item.conclusion,
-                            )?.label ?? "自动结论"}
-                            {item.conclusionReason &&
-                              ` · ${item.conclusionReason}`}
-                          </span>
-                        )}
-                        {item.hasNewEvidence && (
-                          <Badge tone="info">新材料</Badge>
-                        )}
-                      </span>
-                    </Button>
-                  </div>
-                ))}
-              </section>
-            ))}
+                      </Button>
+                    </div>
+                  ))}
+                </section>
+              ))}
           </aside>
           <section className="rv-center" aria-label="证据审核">
             <div className="rv-evidence" ref={evidenceElement}>
               <div className="rv-evidence-heading">
-                <h2>
-                  {selected
-                    ? selected.reasonCodes.map(reasonName).join("、") ||
-                      selected.title
-                    : "证据审核"}
-                </h2>
-                <Button
-                  label={referenceOpen ? "收起参考" : "申请与记录"}
-                  size="sm"
-                  variant="ghost"
-                  aria-expanded={referenceOpen}
-                  aria-controls="review-reference"
-                  onClick={() => setReferenceOpen(!referenceOpen)}
-                />
+                <div>
+                  <div className="rv-item-context">
+                    <span>
+                      {selected
+                        ? `${CHECK_LABELS[selected.checkType]} · ${sortedChecks.indexOf(selected) + 1} / ${checks.length}`
+                        : "审核依据"}
+                    </span>
+                    {selected && (
+                      <Badge>{selectedPending ? "待判断" : "已记录"}</Badge>
+                    )}
+                  </div>
+                  <h2>
+                    {selected
+                      ? selected.reasonCodes.map(reasonName).join("、") ||
+                        selected.title
+                      : "证据审核"}
+                  </h2>
+                </div>
               </div>
               {selected ? (
                 <EvidencePanel
@@ -1237,6 +1318,7 @@ export default function ReviewPage() {
                   item={selected}
                   draft={draft}
                   onDraft={updateDraft}
+                  onReadingChange={setFilesReading}
                   onMedia={reviewer ? media : undefined}
                   readOnly={!editable || !selectedPending || needsEscalation}
                 />
@@ -1249,26 +1331,35 @@ export default function ReviewPage() {
                 className="rv-conclusion"
                 aria-label="本项结论"
                 onClickCapture={(event) => {
+                  const button = (
+                    event.target as HTMLElement
+                  ).closest<HTMLButtonElement>("button");
                   if (
-                    canClaim &&
-                    !(event.target as HTMLElement).closest(
-                      "[data-claim-trigger], .inline-confirm",
-                    )
-                  ) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    const button = (
-                      event.target as HTMLElement
-                    ).closest<HTMLButtonElement>("button");
-                    requestClaim(
-                      button
-                        ? () => requestAnimationFrame(() => button.click())
-                        : undefined,
-                    );
-                  }
+                    !canClaim ||
+                    !button ||
+                    button.matches(':disabled, [aria-disabled="true"]') ||
+                    button.closest("[data-claim-trigger], .inline-confirm")
+                  )
+                    return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  requestClaim(() =>
+                    requestAnimationFrame(() => button.click()),
+                  );
                 }}
               >
-                {selectedPending ? (
+                {selectedPending &&
+                !claimable &&
+                (!eligible || !owner || order.status !== "IN_PROGRESS") ? (
+                  <div className="rv-conclusion-content">
+                    <strong>本项尚待判断</strong>
+                    <span className="secondary">
+                      {waitingSupplement
+                        ? "补件齐套后继续核验，当前只读查看证据。"
+                        : readOnlyReason}
+                    </span>
+                  </div>
+                ) : selectedPending ? (
                   <div className="rv-conclusion-content">
                     {canClaim && (
                       <div data-claim-trigger className="rv-claim-prompt">
@@ -1305,7 +1396,7 @@ export default function ReviewPage() {
                         aria-label="本项结论"
                         aria-live="polite"
                       >
-                        <strong>本项结论</strong>
+                        <strong>记录本项判断</strong>
                         <div className="row">
                           {options.map((option, index) => {
                             const unavailable =
@@ -1318,19 +1409,9 @@ export default function ReviewPage() {
                             return (
                               <Button
                                 key={option.value}
-                                label={`${conclusion === option.value && DECLINE_CONCLUSIONS[option.value] ? "已选 · " : ""}${option.label}`}
+                                label={option.label}
                                 size="sm"
-                                className={
-                                  DECLINE_CONCLUSIONS[option.value]
-                                    ? `rv-danger-choice ${conclusion === option.value ? "is-selected-danger" : ""}`
-                                    : undefined
-                                }
-                                variant={
-                                  conclusion === option.value &&
-                                  !DECLINE_CONCLUSIONS[option.value]
-                                    ? "primary"
-                                    : "secondary"
-                                }
+                                variant="secondary"
                                 aria-pressed={conclusion === option.value}
                                 isDisabled={unavailable}
                                 tooltip={
@@ -1347,61 +1428,60 @@ export default function ReviewPage() {
                       </div>
                     )}
                     <div className="rv-conclusion-row">
-                      {selected.checkType !== "SCREENING_WATCHLIST" && (
-                        <div className="rv-reasons">
-                          {reasons.length < 5 ? (
-                            <div role="group" aria-label="结论原因">
-                              <div className="secondary">
-                                结论原因{!conclusion && " · 请先选择结论"}
+                      {selected.checkType !== "SCREENING_WATCHLIST" &&
+                        !!conclusion && (
+                          <div className="rv-reasons">
+                            {reasons.length < 5 ? (
+                              <div role="group" aria-label="结论原因">
+                                <div className="secondary">结论原因</div>
+                                <div className="row">
+                                  {reasons.map((value) => (
+                                    <Button
+                                      key={value}
+                                      label={value}
+                                      size="sm"
+                                      variant="secondary"
+                                      aria-pressed={reason === value}
+                                      isDisabled={!editable || needsEscalation}
+                                      tooltip={
+                                        readOnlyReason ||
+                                        "选择原因后按 Ctrl + Enter 提交本项"
+                                      }
+                                      onClick={() =>
+                                        remember({ reason: value })
+                                      }
+                                    />
+                                  ))}
+                                </div>
                               </div>
-                              <div className="row">
-                                {reasons.map((value) => (
-                                  <Button
-                                    key={value}
-                                    label={value}
-                                    size="sm"
-                                    variant={
-                                      reason === value ? "primary" : "secondary"
-                                    }
-                                    aria-pressed={reason === value}
-                                    isDisabled={!editable || needsEscalation}
-                                    tooltip={
-                                      readOnlyReason ||
-                                      "选择原因后按 Ctrl + Enter 提交本项"
-                                    }
-                                    onClick={() => remember({ reason: value })}
-                                  />
-                                ))}
-                              </div>
-                            </div>
-                          ) : (
-                            <Selector
-                              label="结论原因"
-                              value={reason || undefined}
-                              placeholder="选择原因"
-                              isDisabled={!editable || needsEscalation}
-                              options={reasons.map((value) => ({
-                                value,
-                                label: value,
-                              }))}
-                              onChange={(value) => remember({ reason: value })}
-                            />
-                          )}
-                        </div>
-                      )}
+                            ) : (
+                              <Selector
+                                label="结论原因"
+                                value={reason || undefined}
+                                placeholder="选择原因"
+                                isDisabled={!editable || needsEscalation}
+                                options={reasons.map((value) => ({
+                                  value,
+                                  label: value,
+                                }))}
+                                onChange={(value) =>
+                                  remember({ reason: value })
+                                }
+                              />
+                            )}
+                          </div>
+                        )}
                       <Button
                         label={
                           DECLINE_CONCLUSIONS[conclusion]
                             ? "提交拒绝结论"
-                            : "提交本项"
+                            : pending.length > 1
+                              ? "保存并查看下一项"
+                              : "保存本项结论"
                         }
                         variant="primary"
-                        className={
-                          DECLINE_CONCLUSIONS[conclusion]
-                            ? "rv-danger-choice is-selected-danger"
-                            : undefined
-                        }
                         tooltip={
+                          (filesReading ? "材料正在读取，请稍候" : "") ||
                           readOnlyReason ||
                           (needsEscalation
                             ? "请先完成转受限"
@@ -1410,10 +1490,11 @@ export default function ReviewPage() {
                               ? "请逐个完成命中结论与原因"
                               : !conclusion || !reason
                                 ? "选择结论和原因后可用 · Ctrl + Enter"
-                                : "提交本项 · Ctrl + Enter")
+                                : "保存本项结论 · Ctrl + Enter")
                         }
                         isDisabled={
                           !editable ||
+                          filesReading ||
                           needsEscalation ||
                           (selected.checkType === "SCREENING_WATCHLIST"
                             ? !watchComplete
@@ -1481,7 +1562,12 @@ export default function ReviewPage() {
                           : "未提交内容已自动保存为本机草稿"}
                       </span>
                     )}
-                    {formError && <Banner status="error" title={formError} />}
+                    {(formError || mutationError) && (
+                      <Banner
+                        status="error"
+                        title={formError || mutationError}
+                      />
+                    )}
                   </div>
                 ) : (
                   <div className="rv-conclusion-content">
@@ -1490,7 +1576,13 @@ export default function ReviewPage() {
                         tone={
                           DECLINE_CONCLUSIONS[selected.conclusion ?? ""]
                             ? "danger"
-                            : "success"
+                            : SUPPLEMENT_CONCLUSIONS[selected.conclusion ?? ""]
+                              ? "warning"
+                              : ["TRUE_POSITIVE", "UNCERTAIN"].includes(
+                                    selected.conclusion ?? "",
+                                  )
+                                ? "warning"
+                                : "success"
                         }
                       >
                         {options.find(
@@ -1510,6 +1602,7 @@ export default function ReviewPage() {
                       <Button
                         label="重新审核"
                         size="sm"
+                        variant="secondary"
                         onClick={() =>
                           openPreview({
                             title: "重新审核本项",
@@ -1531,54 +1624,101 @@ export default function ReviewPage() {
                     )}
                   </div>
                 )}
-                {pending.length === 0 && (
-                  <div className="rv-composed-result" aria-live="polite">
-                    <strong>
-                      合成结论：
-                      {needsEscalation
-                        ? "转受限"
-                        : unsubmittedSupplement
-                          ? "待提补件需求"
-                          : resultNames[suggested]}
-                    </strong>
-                    <span>
-                      商户看到：
-                      {suggested === "DECLINED"
-                        ? "未通过，使用通用文案，不披露内部原因。"
-                        : "审核中"}
-                    </span>
-                    <span className="secondary">
-                      下一步：
-                      {needsEscalation
-                        ? "确认转受限后由合规负责人处置"
-                        : unsubmittedSupplement
-                          ? "向运营提交补件需求"
-                          : suggested === "PENDING_APPROVAL"
-                            ? "提交审批，按授权完成审批"
-                            : suggested === "DECLINED"
-                              ? "确认拒绝后终止申请"
-                              : "确认通过后进入渠道进件"}
-                    </span>
-                  </div>
-                )}
               </section>
             )}
           </section>
-          <aside
-            className="rv-reference"
-            id="review-reference"
-            aria-label="参考信息"
-            hidden={!referenceOpen}
-          >
-            <div className="rv-reference-heading">
-              <h2>申请与记录</h2>
+        </div>
+      )}
+      <footer className="rv-case-actionbar" aria-label="整单处理">
+        <div className="rv-case-status" aria-live="polite">
+          <strong>
+            {waitingSupplement
+              ? "补件处理中"
+              : closed
+                ? workflow.title
+                : `${checks.length - pending.length} / ${checks.length} 项已记录`}
+          </strong>
+          <span>
+            {waitingSupplement
+              ? `${order.slaPaused ? "SLA 已暂停 · " : ""}${activeSupplements.length ? `${activeSupplements.length} 张补件单在跟进，` : ""}齐套后继续审核`
+              : canFinalize
+                ? `建议${resultNames[suggested]} · 尚未提交整单`
+                : order.status !== "IN_PROGRESS"
+                  ? statusLabel(order.status)
+                  : finalizeBlockReason}
+          </span>
+        </div>
+        <div className="rv-case-actions" ref={caseActions}>
+          {waitingSupplement && !data.restrictedLocked && (
+            <Button
+              label="查看补件进度"
+              variant="secondary"
+              icon={<Clock3 size={16} />}
+              onClick={() => openReference("supplements")}
+            />
+          )}
+          {pending.length > 0 && !selectedPending && editable && (
+            <Button
+              label="继续下一待办"
+              onClick={() =>
+                selectItem(
+                  sortedChecks.find((item) => item.status === "PENDING")!.id,
+                )
+              }
+            />
+          )}
+          {claimable && (
+            <Button
+              label="领取并开始审核"
+              variant="primary"
+              isLoading={busy}
+              isDisabled={!canClaim}
+              onClick={() => requestClaim()}
+            />
+          )}
+          {eligible && owner && order.status === "IN_PROGRESS" && (
+            <>
               <Button
-                label="收起参考"
-                variant="ghost"
-                size="sm"
-                onClick={() => setReferenceOpen(false)}
+                label="提补件需求"
+                variant={
+                  unsubmittedSupplement && !pending.length && !needsEscalation
+                    ? "primary"
+                    : "secondary"
+                }
+                isDisabled={!editable || needsEscalation || !checks.length}
+                tooltip={
+                  readOnlyReason ||
+                  (needsEscalation
+                    ? "请先转受限"
+                    : !checks.length
+                      ? "有待补充的检查项后可用"
+                      : "向运营提交补件需求")
+                }
+                onClick={() => setSupplementOpen(true)}
               />
-            </div>
+              <Button
+                label={
+                  suggested === "PENDING_APPROVAL" ? "提交审批" : "确认整单结果"
+                }
+                variant={canFinalize ? "primary" : "secondary"}
+                isDisabled={!canFinalize}
+                tooltip={finalizeBlockReason || "打开后果预览 · Ctrl + Enter"}
+                onClick={finalize}
+              />
+            </>
+          )}
+        </div>
+      </footer>
+      {!data.restrictedLocked && (
+        <Dialog
+          className="rv-reference-dialog"
+          isOpen={referenceOpen}
+          onOpenChange={setReferenceOpen}
+          width={760}
+          padding={0}
+        >
+          <DialogHeader title="资料与记录" onOpenChange={setReferenceOpen} />
+          <aside className="rv-reference" aria-label="参考信息">
             <DetailTabs
               id="review-reference"
               label="参考信息分类"
@@ -1687,7 +1827,7 @@ export default function ReviewPage() {
                     {data.people.map((person, index) => (
                       <li key={index}>
                         <div className="row">
-                          <strong>{person.name}</strong>
+                          <span>{person.name}</span>
                           {!person.declared && (
                             <Badge tone="warning">未申报</Badge>
                           )}
@@ -1720,9 +1860,8 @@ export default function ReviewPage() {
                 {data.supplements?.length ? (
                   <div className="stack">
                     {data.supplements.map((supplement) => (
-                      <Card
+                      <section
                         key={supplement.id}
-                        padding={3}
                         className="rv-reference-card"
                       >
                         <div className="spread">
@@ -1806,7 +1945,7 @@ export default function ReviewPage() {
                         ) : (
                           <Empty title="暂无沟通记录" />
                         )}
-                      </Card>
+                      </section>
                     ))}
                   </div>
                 ) : (
@@ -1853,32 +1992,52 @@ export default function ReviewPage() {
               >
                 <h3 className="section-title">操作日志与证据快照</h3>
                 <div className="stack">
-                  {reviewer && owner && (
+                  {reviewer && ((owner && !closed) || !!comment) && (
                     <div className="rv-comment">
                       <TextArea
                         label="合规内部备注"
                         value={comment}
                         onChange={updateComment}
+                        isReadOnly={!owner || closed}
                         rows={3}
                         maxLength={2000}
                       />
-                      <Button
-                        label="添加备注"
-                        isDisabled={!comment.trim() || busy || stale}
-                        tooltip={
-                          stale
-                            ? "刷新工单后可用"
-                            : busy
-                              ? "正在保存，请稍候"
-                              : !comment.trim()
-                                ? "填写备注后可用"
-                                : "保存内部备注，5 秒内可撤销"
-                        }
-                        onClick={async () => {
-                          if (await act("note", { note: comment.trim() }))
-                            updateComment("");
-                        }}
-                      />
+                      {(!owner || closed) && (
+                        <p className="secondary">
+                          当前无法提交备注。草稿仅保存在本地，可复制或丢弃。
+                        </p>
+                      )}
+                      <div className="action-row">
+                        {owner && !closed && (
+                          <Button
+                            label="添加备注"
+                            isDisabled={!comment.trim() || busy || stale}
+                            tooltip={
+                              stale
+                                ? "刷新工单后可用"
+                                : busy
+                                  ? "正在保存，请稍候"
+                                  : !comment.trim()
+                                    ? "填写备注后可用"
+                                    : "保存内部备注，5 秒内可撤销"
+                            }
+                            onClick={async () => {
+                              if (await act("note", { note: comment.trim() }))
+                                updateComment("");
+                            }}
+                          />
+                        )}
+                        {!!comment && (
+                          <InlineConfirm
+                            title="丢弃此设备上的未提交备注？此操作不可恢复。"
+                            confirmLabel="丢弃草稿"
+                            busy={busy}
+                            onConfirm={() => updateComment("")}
+                          >
+                            <Button label="丢弃草稿" isDisabled={busy} />
+                          </InlineConfirm>
+                        )}
+                      </div>
                     </div>
                   )}
                   <Timeline audit={data.audit ?? []} />
@@ -1918,7 +2077,7 @@ export default function ReviewPage() {
               </DetailSection>
             </div>
           </aside>
-        </div>
+        </Dialog>
       )}
       <SupplementNeedsDialog
         data={data}
@@ -1926,6 +2085,7 @@ export default function ReviewPage() {
         open={supplementOpen}
         busy={busy}
         onClose={() => setSupplementOpen(false)}
+        submissionError={mutationError}
         onSubmit={async (payload) =>
           completeCase(await act("supplement-needs", payload))
         }
@@ -1964,6 +2124,7 @@ export default function ReviewPage() {
         }
         danger={preview?.finalize ? outcome === "DECLINED" : preview?.danger}
         busy={busy}
+        error={mutationError}
         confirmDisabled={
           (!!preview?.reason ||
             (!!preview?.finalize && outcome !== suggested)) &&
@@ -2120,7 +2281,7 @@ export default function ReviewPage() {
                 <IdText value={snapshot.id} /> · {dateTime(snapshot.at)}
               </p>
               {snapshot.checkItems.map((item) => (
-                <Card key={item.id} padding={4}>
+                <section key={item.id} className="detail-section">
                   <h3 className="section-title">
                     {item.reasonCodes.map(reasonName).join("、")}
                   </h3>
@@ -2145,7 +2306,7 @@ export default function ReviewPage() {
                     onDraft={() => {}}
                     readOnly
                   />
-                </Card>
+                </section>
               ))}
             </>
           )}

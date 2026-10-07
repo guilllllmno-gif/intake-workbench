@@ -76,7 +76,8 @@ export default function ChannelPage() {
   const { session } = useSession();
   const queueFlow = useQueueFlow();
   const supplementHref = useHref("/supplements/");
-  const { data, loading, error, stale, busy, reload, act } = useOrder();
+  const { data, loading, error, mutationError, stale, busy, reload, act } =
+    useOrder();
   const [tab, setTab] = useDetailView("receipt", [
     "receipt",
     "history",
@@ -86,6 +87,9 @@ export default function ChannelPage() {
   const [mappingCode, setMappingCode] = useState("CH-MORE-INFO");
   const [isRiskType, setRiskType] = useState(false);
   const [documents, setDocuments] = useState<Document[]>([]);
+  const [readingDocuments, setReadingDocuments] = useState<
+    Record<number, boolean>
+  >({});
   const [needs, setNeeds] = useState<Need[]>([]);
   const [channelId, setChannelId] = useState("");
   const [reason, setReason] = useState("");
@@ -98,11 +102,7 @@ export default function ChannelPage() {
   const ops = session.role === "OPS_AGENT" || session.role === "OPS_LEAD";
   const lead = session.role === "OPS_LEAD";
   const owns = ops && w?.assignee?.id === session.userId;
-  const claimable =
-    ops &&
-    !!w &&
-    !w.assignee &&
-    ["QUEUED", "IN_PROGRESS", "WAITING_CHANNEL"].includes(w.status);
+  const claimable = ops && !!w && !w.assignee && w.status === "QUEUED";
   const blocked = (!owns && !claimable) || stale || busy;
   const active =
     w?.status === "IN_PROGRESS" || (claimable && w?.status === "QUEUED");
@@ -125,25 +125,29 @@ export default function ChannelPage() {
   );
   const canResubmit =
     active &&
-    (!risk || riskCleared) &&
-    (riskCleared ||
-      (channel?.receiptType === "MORE_INFO"
-        ? completedSupplements.length > 0
-        : channel?.mappedReasonCode === "CH-REJECT-DOCS"));
+    (!risk || riskCleared || channel?.receiptType === "MORE_INFO") &&
+    (channel?.receiptType === "MORE_INFO"
+      ? completedSupplements.length > 0
+      : riskCleared || channel?.mappedReasonCode === "CH-REJECT-DOCS");
   const canSupplement =
     active &&
     (channel?.receiptType === "MORE_INFO" ||
-      (!risk && channel?.mappedReasonCode === "CH-REJECT-DOCS"));
+      (!risk &&
+        channel?.receiptType === "REJECTED" &&
+        channel?.mappedReasonCode === "CH-REJECT-DOCS"));
   const canSwitch =
     active &&
     !risk &&
+    channel?.receiptType === "REJECTED" &&
     channel?.mappedReasonCode === "CH-REJECT-POLICY" &&
     alternatives.length > 0;
   const recommendation =
-    channel?.receiptType === "MORE_INFO"
-      ? "channel-supplement"
-      : channel?.receiptType === "TIMEOUT" || w?.status === "WAITING_CHANNEL"
-        ? "channel-remind"
+    w?.status === "WAITING_CHANNEL" || channel?.receiptType === "TIMEOUT"
+      ? "channel-remind"
+      : channel?.receiptType === "MORE_INFO"
+        ? canResubmit
+          ? "channel-resubmit"
+          : "channel-supplement"
         : !channel?.mappedReasonCode
           ? lead
             ? "mapping"
@@ -161,7 +165,7 @@ export default function ChannelPage() {
     setDialog("");
     setPreview(null);
     setReleaseReason("");
-  }, [w?.id, session.userId]);
+  }, [w?.id, session.userId, session.role]);
   useEffect(() => {
     setMappingCode(
       channel?.receiptType === "REJECTED"
@@ -179,8 +183,7 @@ export default function ChannelPage() {
     const result = await act(action, payload);
     if (result) {
       setDialog("");
-      if (result.workOrder.status === "CLOSED")
-        await queueFlow.next(result.workOrder.id);
+      if (action === "channel-supplement") setTab("history");
     }
     return result;
   }
@@ -234,15 +237,17 @@ export default function ChannelPage() {
     setDialog(action);
   }
   async function confirmAction() {
+    if (formInvalid) return null;
     if (dialog === "channel-supplement")
-      await execute(dialog, { items: needs });
-    if (dialog === "channel-resubmit") await execute(dialog, { documents });
-    if (dialog === "channel-switch") await execute(dialog, { channelId });
+      return execute(dialog, { items: needs });
+    if (dialog === "channel-resubmit") return execute(dialog, { documents });
+    if (dialog === "channel-switch") return execute(dialog, { channelId });
     if (dialog === "channel-escalate")
-      await execute(dialog, { reason: reason.trim() || undefined });
+      return execute(dialog, { reason: reason.trim() || undefined });
     if (dialog === "channel-terminate")
-      await execute(dialog, { reason: reason.trim() });
-    if (dialog === "channel-remind") await execute(dialog, { method });
+      return execute(dialog, { reason: reason.trim() });
+    if (dialog === "channel-remind") return execute(dialog, { method });
+    return null;
   }
   function actionReason(action: string): string {
     if (busy) return "正在保存，完成后可操作";
@@ -250,9 +255,11 @@ export default function ChannelPage() {
     if (action === "mapping" && lead)
       return active ? "" : "补充映射：渠道工单恢复处理中后可用";
     if (blocked)
-      return w?.assignee
-        ? `由 ${w.assignee.name} 处理，转派给你后可操作`
-        : "当前角色不可处理，切换到运营账号后可操作";
+      return !ops
+        ? "当前角色不可处理，切换到运营账号后可操作"
+        : w?.assignee
+          ? `由 ${w.assignee.name} 处理，转派给你后可操作`
+          : "当前状态不可领取，请等待流程恢复或由组长指派";
     if (action === "mapping-request")
       return w?.mappingRequestedAt
         ? "已提交组长映射任务，映射完成后可继续处理"
@@ -276,7 +283,9 @@ export default function ChannelPage() {
             ? "改投渠道：配置其他可用渠道后可用"
             : "改投渠道：完成原因映射并恢复处理中后可用";
     if (action === "channel-escalate")
-      return active && risk ? "" : "转合规判断：风险类驳回且处于处理中时可用";
+      return active && risk && channel?.receiptType === "REJECTED"
+        ? ""
+        : "转合规判断：风险类驳回且处于处理中时可用";
     if (action === "channel-remind")
       return w?.status === "WAITING_CHANNEL" ||
         (active && channel?.receiptType === "TIMEOUT")
@@ -304,14 +313,10 @@ export default function ChannelPage() {
     before: channel?.documents.find((item) => item.name === document.name),
     after: document,
   }));
-  const changed = changes.some(
-    (row) =>
-      row.before?.value !== row.after.value ||
-      row.before?.file?.id !== row.after.file?.id ||
-      row.before?.name !== row.after.name,
-  );
   const formInvalid =
     blocked ||
+    Object.values(readingDocuments).some(Boolean) ||
+    (!!dialog && !!actionReason(dialog)) ||
     (dialog === "channel-supplement" &&
       (!needs.length ||
         needs.some(
@@ -322,7 +327,7 @@ export default function ChannelPage() {
             (item.actionType === "CONFIRM_FIELD" && !item.field?.trim()),
         ))) ||
     (dialog === "channel-resubmit" &&
-      (!changed ||
+      (!documents.length ||
         documents.some(
           (document) => !document.name.trim() || !document.value.trim(),
         ))) ||
@@ -335,12 +340,14 @@ export default function ChannelPage() {
     "channel-escalate":
       "生成合规检查项，渠道工单变为等待合规；合规给出结论前停止渠道处理。",
     "channel-remind": "记录催询时间与方式，重新开始渠道超时计时。",
-    "channel-terminate": alternatives.length
-      ? "终止本次渠道提交；其他可用渠道保留。"
-      : "终止本次渠道提交；无其他可用渠道，申请对外状态变为未通过，对外类别为综合评估。",
+    "channel-terminate": (data?.otherChannels || []).some(
+      (item) => !["TERMINATED", "SELECTED", "AVAILABLE"].includes(item.status),
+    )
+      ? "终止本次渠道提交；其他在途渠道保留，申请对外状态不变。"
+      : "终止最后在途渠道，申请将结束并对外显示未通过。可选但尚未提交的渠道不会自动启动；若要继续进件，请取消并选择改投。",
   };
   const headerActions =
-    ops && w?.status !== "CLOSED" ? (
+    ops && w?.status !== "CLOSED" && (claimable || owns || (lead && active)) ? (
       <div className="row">
         {claimable ? (
           <Btn
@@ -348,14 +355,14 @@ export default function ChannelPage() {
             disabled={busy || stale}
             busy={busy}
             onClick={async () => {
-              if (await execute("claim")) beginRecommended();
+              await execute("claim");
             }}
           >
-            领取并处理
+            领取工单
           </Btn>
         ) : (
           <Btn
-            variant="primary"
+            variant={actionReason(recommendation) ? "secondary" : "primary"}
             disabled={!!actionReason(recommendation)}
             title={actionReason(recommendation) || undefined}
             onClick={beginRecommended}
@@ -409,12 +416,13 @@ export default function ChannelPage() {
             />
           }
           confirmDisabled={!releaseReason.trim()}
-          disabled={!owns || busy || stale}
+          disabled={!owns || busy || stale || w?.status !== "IN_PROGRESS"}
           busy={busy}
+          error={mutationError}
           onConfirm={() => execute("release", { reason: releaseReason.trim() })}
         >
           <Btn
-            disabled={!owns || busy || stale}
+            disabled={!owns || busy || stale || w?.status !== "IN_PROGRESS"}
             title={
               busy
                 ? "保存完成后可释放"
@@ -422,7 +430,9 @@ export default function ChannelPage() {
                   ? "刷新工单后可释放"
                   : !owns
                     ? "领取工单后可释放"
-                    : undefined
+                    : w?.status !== "IN_PROGRESS"
+                      ? "工单恢复处理中后可释放"
+                      : undefined
             }
           >
             释放
@@ -443,13 +453,35 @@ export default function ChannelPage() {
                 endContent={<Btn onClick={reload}>刷新</Btn>}
               />
             )}
+            {mutationError && !dialog && (
+              <Banner status="error" title={mutationError} />
+            )}
+            {w.status === "CLOSED" && (
+              <Banner
+                status="info"
+                title={`渠道处理已结束；申请当前状态：${data.application.externalStatus}`}
+                endContent={
+                  ops ? (
+                    <Btn
+                      busy={queueFlow.busy}
+                      disabled={queueFlow.busy}
+                      onClick={() => void queueFlow.next(w.id)}
+                    >
+                      领取下一单
+                    </Btn>
+                  ) : undefined
+                }
+              />
+            )}
             {ops && !owns && w.status !== "CLOSED" && (
               <Banner
                 status="info"
                 title={
                   w.assignee
                     ? `当前由 ${w.assignee.name} 处理`
-                    : "可以浏览回执；点击主操作领取并继续"
+                    : claimable
+                      ? "可以浏览回执；领取工单后选择处理方式"
+                      : "当前状态不可领取，请等待流程恢复或由组长指派"
                 }
               />
             )}
@@ -787,16 +819,34 @@ export default function ChannelPage() {
                 title={actionLabels[dialog]}
                 description={descriptions[dialog]}
                 merchant={
-                  dialog === "channel-terminate" && !alternatives.length
+                  dialog === "channel-terminate" &&
+                  !(data.otherChannels || []).some(
+                    (item) =>
+                      !["TERMINATED", "SELECTED", "AVAILABLE"].includes(
+                        item.status,
+                      ),
+                  )
                     ? "未通过 · 综合评估"
                     : dialog === "channel-supplement"
-                      ? "通知发送后显示资料待补充"
-                      : "审核中"
+                      ? "资料待补充；请在补件工单发送通知"
+                      : dialog === "channel-escalate"
+                        ? "审核中"
+                        : data.application.externalStatus
                 }
                 sales={
-                  dialog === "channel-terminate" && !alternatives.length
+                  dialog === "channel-terminate" &&
+                  !(data.otherChannels || []).some(
+                    (item) =>
+                      !["TERMINATED", "SELECTED", "AVAILABLE"].includes(
+                        item.status,
+                      ),
+                  )
                     ? "未通过"
-                    : "审核中"
+                    : dialog === "channel-supplement"
+                      ? "资料待补充"
+                      : dialog === "channel-escalate"
+                        ? "审核中"
+                        : data.application.externalStatus
                 }
                 reversible={
                   dialog === "channel-terminate"
@@ -805,17 +855,22 @@ export default function ChannelPage() {
                 }
                 confirmLabel={`确认${actionLabels[dialog]}`}
                 busy={busy}
+                error={mutationError}
                 confirmDisabled={formInvalid}
                 danger={dialog === "channel-terminate"}
                 onClose={() => setDialog("")}
                 onConfirm={confirmAction}
               >
+                {stale && <Btn onClick={reload}>刷新工单</Btn>}
+                {Object.values(readingDocuments).some(Boolean) && (
+                  <p role="status">附件正在读取，完成后可提交。</p>
+                )}
                 {formInvalid && (
                   <p className="secondary" role="status">
-                    {blocked
+                    {blocked || !!actionReason(dialog)
                       ? actionReason(dialog)
                       : dialog === "channel-resubmit"
-                        ? "修改至少一项提交资料，并填写全部资料内容后可确认。"
+                        ? "填写全部资料内容后可确认；合规批准后可按原资料重新提交。"
                         : dialog === "channel-supplement"
                           ? "补全每项对外要求及所需字段或人员后可确认。"
                           : dialog === "channel-switch"
@@ -946,6 +1001,14 @@ export default function ChannelPage() {
                           <FileUpload
                             maxCount={1}
                             value={document.file ? [document.file] : []}
+                            disabled={busy}
+                            onReadingChange={(reading) =>
+                              setReadingDocuments((current) =>
+                                current[index] === reading
+                                  ? current
+                                  : { ...current, [index]: reading },
+                              )
+                            }
                             onChange={(files: UploadedFile[]) =>
                               setDocuments((previous) =>
                                 previous.map((item, position) =>

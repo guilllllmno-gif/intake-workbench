@@ -179,12 +179,14 @@ export function useOrder() {
   const [local, setLocal] = useState<OrderDetail | null>(null);
   const [stale, setStale] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [mutationError, setMutationError] = useState("");
   const notify = useNotice();
   const showToast = useToast();
   const revision = useRef(0);
   useEffect(() => {
     setLocal(null);
     setStale(false);
+    setMutationError("");
     revision.current++;
   }, [id, session.role, session.userId, resource.data]);
   useEffect(() => {
@@ -219,6 +221,7 @@ export function useOrder() {
     if (!current.current || acting.current) return null;
     acting.current = true;
     setBusy(true);
+    setMutationError("");
     const rev = revision.current;
     try {
       const result = await api.mutate(
@@ -273,7 +276,10 @@ export function useOrder() {
       return result;
     } catch (e) {
       const err = e as Error & { status?: number };
-      if (err.status === 409) setStale(true);
+      if (rev === revision.current) {
+        if (err.status === 409) setStale(true);
+        setMutationError(err.message || "操作失败，请重试");
+      }
       notify(err.message || "操作失败，请重试");
       return null;
     } finally {
@@ -287,9 +293,11 @@ export function useOrder() {
     stale,
     busy,
     act,
+    mutationError,
     reload: () => {
       setLocal(null);
       setStale(false);
+      setMutationError("");
       resource.reload();
     },
   };

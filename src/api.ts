@@ -184,8 +184,18 @@ function authRead(w: WorkOrder, session: Session) {
     );
 }
 function persist(s: Store) {
-  if (typeof localStorage !== "undefined")
-    localStorage.setItem(KEY, JSON.stringify(s));
+  if (typeof localStorage !== "undefined") {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(s));
+    } catch (error) {
+      if (error instanceof Error && error.name === "QuotaExceededError")
+        fail(
+          "浏览器本地存储空间不足，操作未保存。请移除较大附件后重试；也可在原型说明中重置测试数据。",
+          507,
+        );
+      throw error;
+    }
+  }
   memory = s;
   if (typeof window !== "undefined")
     window.dispatchEvent(new Event("workbench:updated"));
@@ -942,12 +952,7 @@ function detail(
       result.channel.receiptType ||= w.triggerReceiptType;
     }
     result.otherChannels = s.submissions
-      .filter(
-        (v) =>
-          v.applicationId === a.id &&
-          v.id !== c?.id &&
-          v.status === "AVAILABLE",
-      )
+      .filter((v) => v.applicationId === a.id && v.id !== c?.id)
       .map((v) => projectChannel(v, session));
   }
   if (w.type === "QA" && s.qa[w.id])
@@ -1866,7 +1871,11 @@ function noticePreview(
       ? w.dueAt
       : new Date(Date.now() + 7 * DAY).toISOString();
   required(w.merchantToken, "商户安全链接");
-  const link = `https://merchant.futurepay.example/supplements/${encodeURIComponent(w.merchantToken)}`;
+  const path = `${import.meta.env?.BASE_URL ?? "/"}${import.meta.env?.VITE_GITHUB_PAGES === "true" ? "#/" : ""}merchant/${encodeURIComponent(w.merchantToken)}`;
+  const link =
+    typeof window === "undefined"
+      ? path
+      : new URL(path, window.location.origin).href;
   const salutation =
     language === "zh" ? `尊敬的 ${contact.name}：` : `Dear ${contact.name},`;
   const lines = items.map((item, i) => {
@@ -3644,7 +3653,7 @@ export const api = {
             (v) =>
               v.applicationId === a.id &&
               v.id !== c.id &&
-              !["TERMINATED", "SELECTED"].includes(v.status),
+              !["TERMINATED", "SELECTED", "AVAILABLE"].includes(v.status),
           )
         ) {
           a.status = "CLOSED";

@@ -74,10 +74,17 @@ import {
   Empty,
   InlineConfirm,
   LoadState,
+  IdText,
   PageHeading,
   PersonName,
 } from "../ui";
-import { COUNTRY_NAMES, RECEIPT_LABELS, dateTime } from "../format";
+import {
+  COUNTRY_NAMES,
+  RECEIPT_LABELS,
+  countryName,
+  dateTime,
+  duration,
+} from "../format";
 import type { QueueFilters, QueueRow, QueueView, User } from "../types";
 import "./queue.css";
 
@@ -105,6 +112,60 @@ function defaultSort(view: QueueView, tab: string): TableSortState {
       direction: ["C31", "C27"].includes(sortKey) ? "descending" : "ascending",
     },
   ];
+}
+
+const merchantNames = new Intl.Collator("zh-CN", {
+  numeric: true,
+  sensitivity: "base",
+});
+const reviewBands = [
+  { key: "overdue", label: "已超时", tone: "danger" },
+  { key: "due", label: "2 小时内到期", tone: "warning" },
+  { key: "today", label: "今天到期", tone: "" },
+  { key: "high", label: "高优先级", tone: "" },
+] as const;
+
+interface QueueTiming {
+  due: number;
+  remaining: number;
+  tone: "paused" | "closed" | "overdue" | "due" | "soon" | "";
+  used: number;
+}
+
+function queueSla(row: QueueRow, now: number): QueueTiming {
+  const due = Date.parse(row.slaDueAt);
+  const remaining = due - now;
+  const total = Math.max(1, due - Date.parse(row.createdAt));
+  const tone = row.slaPaused
+    ? "paused"
+    : CLOSED_STATUSES[row.status]
+      ? "closed"
+      : remaining < 0
+        ? "overdue"
+        : remaining < 7200000
+          ? "due"
+          : remaining < total * 0.2
+            ? "soon"
+            : "";
+  return {
+    due,
+    remaining,
+    tone,
+    used: Math.min(100, Math.max(0, (1 - remaining / total) * 100)),
+  };
+}
+
+function queueDeadline(value: string, now: number) {
+  const due = new Date(value);
+  const today = new Date(now);
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const time = dateTime(value, true).slice(6);
+  return due.toDateString() === today.toDateString()
+    ? `今天 ${time}`
+    : due.toDateString() === tomorrow.toDateString()
+      ? `明天 ${time}`
+      : dateTime(value, true);
 }
 
 export default function QueuePage() {
@@ -138,11 +199,16 @@ function QueueContents() {
   const allowed = MENUS[session.role].some((m) => m.key === view);
   const ops = OPS_ROLES.includes(session.role);
   const manager = ["OPS_LEAD", "COMPLIANCE_HEAD"].includes(session.role);
-  const filters = useMemo(
-    () =>
-      ({ view, tab, ...Object.fromEntries(params.entries()) }) as QueueFilters,
-    [view, tab, params],
-  );
+  const filters = useMemo(() => {
+    const query = new URLSearchParams(params);
+    query.delete("band");
+    query.delete("check");
+    return {
+      view,
+      tab,
+      ...Object.fromEntries(query.entries()),
+    } as QueueFilters;
+  }, [view, tab, params]);
   const resource = useAsync(
     () => api.listOrders(filters, session),
     [view, params.toString(), session.userId],
@@ -188,6 +254,73 @@ function QueueContents() {
   const [density, setDensity] = useState<"compact" | "balanced" | "spacious">(
     "compact",
   );
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const timingKey =
+    view === "review" && tab === "supplement" ? "supplementProgress" : "C10";
+  const checkFilter = view === "review" ? params.get("check") : null;
+  const band =
+    view === "review" && tab !== "supplement"
+      ? reviewBands.find((entry) => entry.key === params.get("band"))?.key
+      : undefined;
+  const queueData = useMemo(() => {
+    const counts = { overdue: 0, due: 0, today: 0, high: 0 };
+    const timings = new Map<string, QueueTiming>();
+    const source = resource.data?.rows ?? [];
+    const rows: QueueRow[] = [];
+    const end = new Date(now);
+    end.setHours(23, 59, 59, 999);
+    for (const row of source) {
+      const timing = queueSla(row, now);
+      timings.set(row.id, timing);
+      if (view !== "review") {
+        rows.push(row);
+        continue;
+      }
+      if (
+        checkFilter &&
+        !row.checkItems?.some((item) => item.title === checkFilter)
+      )
+        continue;
+      const running = timing.tone !== "paused" && timing.tone !== "closed";
+      const matches = {
+        overdue: timing.tone === "overdue",
+        due: timing.tone === "due",
+        today: running && timing.remaining >= 0 && timing.due <= end.getTime(),
+        high: row.priority === "HIGH",
+      };
+      for (const entry of reviewBands)
+        if (matches[entry.key]) counts[entry.key]++;
+      if (!band || matches[band]) {
+        rows.push(row);
+      }
+    }
+    return { rows, counts, timings };
+  }, [resource.data, view, checkFilter, band, now]);
+  const checkOptions = useMemo(() => {
+    if (view !== "review") return [];
+    const titles = new Set(
+      resource.data?.rows.flatMap(
+        (row) => row.checkItems?.map((item) => item.title) ?? [],
+      ) ?? [],
+    );
+    if (checkFilter) titles.add(checkFilter);
+    return Array.from(titles)
+      .sort(merchantNames.compare)
+      .map((value) => ({ value, label: value }));
+  }, [resource.data, checkFilter, view]);
+  const activeFilters = [
+    "search",
+    "type",
+    "priority",
+    "country",
+    "reasonCode",
+    "check",
+    "band",
+  ].some((key) => !!params.get(key));
   const uniformStatus =
     !!resource.data?.rows.length &&
     resource.data.rows.every(
@@ -200,11 +333,11 @@ function QueueContents() {
   const availableKeys = useMemo(() => {
     const keys = getQueueColumnIds(view, tab);
     return [
-      ...keys.filter((key) => key !== "C10"),
-      ...(keys.includes("C10") ? ["C10"] : []),
+      ...keys.filter((key) => key !== timingKey),
+      ...(keys.includes(timingKey) ? [timingKey] : []),
       "actions",
     ];
-  }, [view, tab]);
+  }, [view, tab, timingKey]);
   const defaultKeys = useMemo(
     () =>
       view === "review"
@@ -212,30 +345,36 @@ function QueueContents() {
             "C01",
             "C02",
             "C07",
-            ...(tab === "supplement" ? ["supplementProgress"] : ["C08"]),
-            "C09",
-            "C10",
+            "C08",
+            ...(["new", "screening", "supplement"].includes(tab)
+              ? ["C12"]
+              : []),
+            timingKey,
             "actions",
           ]
         : availableKeys,
-    [view, tab, availableKeys],
+    [view, tab, availableKeys, timingKey],
   );
   const [activeKeys, setActiveKeys] = useState<readonly string[]>(defaultKeys);
-  const pinnedCount = availableKeys.includes("C10") ? 2 : 1;
+  const pinnedCount = availableKeys.includes(timingKey) ? 2 : 1;
   const sortedRows = useMemo(() => {
-    const rows = resource.data?.rows ?? [];
+    const rows = queueData.rows;
     if (!sort.length) return rows;
     return [...rows].sort((a, b) => {
       for (const entry of sort) {
         const accessor = COLUMN_DEFINITIONS[entry.sortKey]?.sort;
-        if (!accessor) continue;
-        const difference = accessor(a) - accessor(b);
+        const difference =
+          view === "review" && entry.sortKey === "C02"
+            ? merchantNames.compare(a.merchantName, b.merchantName)
+            : accessor
+              ? accessor(a) - accessor(b)
+              : 0;
         if (difference)
           return entry.direction === "descending" ? -difference : difference;
       }
       return 0;
     });
-  }, [resource.data, sort]);
+  }, [queueData.rows, sort, view]);
   const currentPage = Math.min(
     page,
     Math.max(1, Math.ceil(sortedRows.length / pageSize)),
@@ -296,6 +435,7 @@ function QueueContents() {
   const update = (key: string, value?: string | null) => {
     const next = new URLSearchParams(params);
     value ? next.set(key, value) : next.delete(key);
+    if (key === "tab") next.delete("band");
     setParams(next);
     saveQueueContext(session, {
       url: `${location.pathname}${next.size ? `?${next.toString()}` : ""}`,
@@ -304,6 +444,30 @@ function QueueContents() {
       scrollLeft: 0,
       sort:
         key === "tab" ? defaultSort(view, value || tabs[0]?.key || "") : sort,
+      page: 1,
+      pageSize,
+    });
+  };
+  const clearFilters = () => {
+    const next = new URLSearchParams(params);
+    for (const key of [
+      "search",
+      "type",
+      "priority",
+      "country",
+      "reasonCode",
+      "check",
+      "band",
+    ])
+      next.delete(key);
+    setSearch("");
+    setParams(next);
+    saveQueueContext(session, {
+      url: `${location.pathname}${next.size ? `?${next.toString()}` : ""}`,
+      ids: [],
+      scrollTop: 0,
+      scrollLeft: 0,
+      sort,
       page: 1,
       pageSize,
     });
@@ -377,6 +541,7 @@ function QueueContents() {
       notify(`已指派 ${completed} 张工单`);
     } catch (e) {
       notify(`已指派 ${completed} 张；${(e as Error).message}`);
+      throw e;
     } finally {
       setBusy(false);
       resource.reload();
@@ -402,13 +567,14 @@ function QueueContents() {
       notify(approve ? "延期已批准" : "延期未批准");
     } catch (e) {
       notify((e as Error).message);
+      throw e;
     } finally {
       setBusy(false);
     }
   };
   const exportRows = () => {
     const url = URL.createObjectURL(
-      new Blob([JSON.stringify(resource.data?.rows ?? [], null, 2)], {
+      new Blob([JSON.stringify(sortedRows, null, 2)], {
         type: "application/json",
       }),
     );
@@ -418,9 +584,103 @@ function QueueContents() {
     link.click();
     URL.revokeObjectURL(url);
   };
+  const queueColumn = (
+    column: TableColumn<TableQueueRow>,
+  ): TableColumn<TableQueueRow> => {
+    switch (column.key) {
+      case "C01":
+        return {
+          ...column,
+          width: pixel(172),
+          renderCell: (row) => (
+            <span className="queue-id">
+              <IdText value={row.id} />
+            </span>
+          ),
+        };
+      case "C02":
+        return {
+          ...column,
+          width: pixel(300),
+          sortable: view === "review" || column.sortable,
+        };
+      case "C07":
+        return {
+          ...column,
+          header:
+            view === "review" && tab === "supplement"
+              ? "补件原因"
+              : column.header,
+          width: pixel(232),
+        };
+      case "C08":
+        return {
+          ...column,
+          width: pixel(80),
+        };
+      case "C10":
+        return {
+          ...column,
+          width: pixel(172),
+          renderCell: (row) => {
+            const timing = queueData.timings.get(row.id)!;
+            return (
+              <div className="queue-sla" data-tone={timing.tone}>
+                {row.slaPaused || timing.tone === "closed" ? (
+                  <strong className="secondary">
+                    {row.slaPaused ? "已暂停" : "已结束"}
+                  </strong>
+                ) : (
+                  <>
+                    <div className="queue-sla-line">
+                      <strong>
+                        {timing.remaining < 0 ? "已超时 " : ""}
+                        {duration(timing.remaining)}
+                      </strong>
+                      <span className="queue-sla-track" aria-hidden="true">
+                        <span style={{ width: `${timing.used}%` }} />
+                      </span>
+                    </div>
+                    <small>{queueDeadline(row.slaDueAt, now)} 到期</small>
+                  </>
+                )}
+              </div>
+            );
+          },
+        };
+      case "C12":
+        return {
+          ...column,
+          width: pixel(100),
+          renderCell: (row) =>
+            row.assignee?.id === session.userId ? (
+              "我"
+            ) : row.assignee ? (
+              <PersonName user={row.assignee} />
+            ) : (
+              "未领取"
+            ),
+        };
+      case "supplementProgress":
+        return {
+          ...column,
+          width: pixel(196),
+          renderCell: (row) => (
+            <div className="queue-sla queue-supplement">
+              {COLUMN_DEFINITIONS.supplementProgress.render(row, session)}
+              {row.slaPaused && <small>SLA 暂停计时</small>}
+            </div>
+          ),
+        };
+      default:
+        return column;
+    }
+  };
   const columns: TableColumn<TableQueueRow>[] = base.length
     ? [
-        ...base.filter((column) => column.key !== "C09" || !uniformStatus),
+        ...base
+          .filter((column) => column.key !== "C09" || !uniformStatus)
+          .map(queueColumn),
         {
           key: "actions",
           header: "操作",
@@ -429,7 +689,7 @@ function QueueContents() {
             canClaim(r) ? (
               <Button
                 label="领取"
-                variant="ghost"
+                variant="secondary"
                 size="sm"
                 isDisabled={busy}
                 tooltip={busy ? "正在领取，请稍候" : "领取并打开工作台"}
@@ -441,9 +701,14 @@ function QueueContents() {
             ) : (
               <Button
                 label={
-                  r.assignee && r.assignee.id !== session.userId
-                    ? "只读查看"
-                    : "打开"
+                  view === "review"
+                    ? r.assignee?.id === session.userId &&
+                      !CLOSED_STATUSES[r.status]
+                      ? "继续"
+                      : "查看"
+                    : r.assignee && r.assignee.id !== session.userId
+                      ? "只读查看"
+                      : "打开"
                 }
                 variant="ghost"
                 size="sm"
@@ -456,11 +721,17 @@ function QueueContents() {
         },
       ]
     : [];
+  const sortableColumns = columns.filter((column) => column.sortable);
+  const activeSort = sortableColumns.some(
+    (column) => column.key === sort[0]?.sortKey,
+  )
+    ? sort[0]
+    : undefined;
   const settingsState = useTableColumnSettingsState({
     columns: availableKeys.map((key) => ({
       key,
       label: COLUMN_DEFINITIONS[key]?.title ?? "操作",
-      isAlwaysVisible: key === "C01" || key === "C10" || key === "actions",
+      isAlwaysVisible: key === "C01" || key === timingKey || key === "actions",
     })),
     activeColumnKeys: activeKeys,
     onChangeActiveColumnKeys: setActiveKeys,
@@ -469,8 +740,8 @@ function QueueContents() {
   const settingsPlugin = useTableColumnSettings<TableQueueRow>({
     ...settingsState.columnSettingsConfig,
     activeColumnKeys: [
-      ...activeKeys.filter((key) => key !== "C10" && key !== "actions"),
-      ...(availableKeys.includes("C10") ? ["C10"] : []),
+      ...activeKeys.filter((key) => key !== timingKey && key !== "actions"),
+      ...(availableKeys.includes(timingKey) ? [timingKey] : []),
       "actions",
     ],
   });
@@ -522,24 +793,17 @@ function QueueContents() {
   });
   const stickyPlugin = useTableStickyColumns<TableQueueRow>({
     startKeys: ["C01"],
-    endKeys: ["C10", "actions"],
+    endKeys: [timingKey, "actions"],
   });
   const navigationPlugin: TablePlugin<TableQueueRow> = {
-    transformHeaderCell: (props, column) =>
-      column.key === "C08"
-        ? {
-            ...props,
-            htmlProps: {
-              ...props.htmlProps,
-              className: `${props.htmlProps.className ?? ""} queue-priority-header`,
-            },
-          }
-        : props,
     transformBodyRow: (props, item) => ({
       ...props,
       htmlProps: {
         ...props.htmlProps,
         tabIndex: 0,
+        "data-sla-tone": availableKeys.includes("C10")
+          ? queueData.timings.get(item.id)?.tone
+          : undefined,
         onClick: (event) => {
           props.htmlProps.onClick?.(event);
           const interactive =
@@ -572,10 +836,6 @@ function QueueContents() {
     [next[index], next[target]] = [next[target], next[index]];
     setActiveKeys(next);
   };
-  const urgent = resource.data?.rows.some(
-    (r) =>
-      new Date(r.slaDueAt).getTime() - Date.now() < 7200000 && !r.slaPaused,
-  );
   if (!allowed)
     return (
       <LoadState
@@ -587,20 +847,40 @@ function QueueContents() {
       </LoadState>
     );
   return (
-    <div className="queue-page">
+    <div className="queue-page workbench-list">
       <PageHeading
-        title={MENUS[session.role].find((m) => m.key === view)?.label ?? "工单"}
+        title={
+          view === "review"
+            ? "审核任务"
+            : (MENUS[session.role].find((m) => m.key === view)?.label ?? "工单")
+        }
+        metadata={
+          resource.loading
+            ? "加载中"
+            : `${sortedRows.length} 张工单 · 今日已处理 ${resource.data?.todayCompleted ?? 0} 张`
+        }
         actions={
           <>
             <span className="secondary small">
               更新于{" "}
               {resource.data ? dateTime(resource.data.updatedAt, true) : "—"}
             </span>
+            <Button
+              label="刷新"
+              variant="ghost"
+              size="sm"
+              icon={<RefreshCw size={16} />}
+              onClick={resource.reload}
+              isLoading={resource.loading}
+            />
             {view !== "extensions" && (
               <Button
-                label="处理下一张"
+                label={
+                  view === "review" && tab === "claim"
+                    ? "领取并处理下一张"
+                    : "处理下一张"
+                }
                 variant="primary"
-                size="sm"
                 isLoading={nextBusy}
                 isDisabled={
                   resource.loading || busy || nextBusy || !sortedRows.length
@@ -618,14 +898,6 @@ function QueueContents() {
                 }}
               />
             )}
-            <Button
-              label="刷新"
-              variant="ghost"
-              size="sm"
-              icon={<RefreshCw size={16} />}
-              onClick={resource.reload}
-              isLoading={resource.loading}
-            />
           </>
         }
       />
@@ -642,13 +914,12 @@ function QueueContents() {
             {tabs.map((t) => (
               <Tab
                 key={t.key}
+                id={`queue-tab-${t.key}`}
                 value={t.key}
                 label={t.label}
                 panelId="queue-results"
                 endContent={
-                  <span
-                    className={`queue-tab-count${urgent ? " queue-tab-count-urgent" : ""}`}
-                  >
+                  <span className="queue-tab-count">
                     {(resource.data?.counts[t.key] ?? 0) > 999
                       ? "999+"
                       : (resource.data?.counts[t.key] ?? 0)}
@@ -658,17 +929,47 @@ function QueueContents() {
             ))}
           </TabList>
         </div>
-        <div className="queue-toolbar">
-          <div className="queue-search">
+        {view === "review" && tab !== "supplement" && (
+          <div
+            className="queue-review-stats"
+            role="group"
+            aria-label="按时效快速筛选"
+          >
+            {reviewBands.map((entry) => (
+              <Button
+                key={entry.key}
+                label={entry.label}
+                aria-label={`${entry.label} ${resource.loading ? "—" : queueData.counts[entry.key]}`}
+                endContent={
+                  <strong>
+                    {resource.loading ? "—" : queueData.counts[entry.key]}
+                  </strong>
+                }
+                size="sm"
+                variant="secondary"
+                className={`queue-review-stat ${entry.tone}`}
+                aria-pressed={band === entry.key}
+                isDisabled={
+                  resource.loading ||
+                  (!queueData.counts[entry.key] && band !== entry.key)
+                }
+                onClick={() =>
+                  update("band", band === entry.key ? null : entry.key)
+                }
+              />
+            ))}
+          </div>
+        )}
+        <div className="list-toolbar queue-query-form">
+          <div className="list-search">
             <TextInput
               label="搜索工单"
-              isLabelHidden
               placeholder="工单号 / 商户 / 申请号"
               startIcon={Search}
               value={search}
               onChange={(value) => {
                 setSearch(value);
-                if (!value) update("search", "");
+                if (!value && params.has("search")) update("search", "");
               }}
               onEnter={() => update("search", search)}
               hasClear
@@ -681,11 +982,56 @@ function QueueContents() {
               onClick={() => update("search", search)}
             />
           </div>
-          {view === "channel" ? (
+          {view === "review" ? (
+            <>
+              <Selector
+                label="优先级"
+                placeholder="优先级"
+                hasClear
+                width={112}
+                value={params.get("priority")}
+                onChange={(value) => update("priority", value)}
+                options={[
+                  { value: "HIGH", label: "高优先级" },
+                  { value: "NORMAL", label: "常规" },
+                  { value: "LOW", label: "低优先级" },
+                ]}
+              />
+              <Selector
+                label="注册地"
+                placeholder="注册地"
+                hasClear
+                width={128}
+                value={params.get("country")}
+                onChange={(value) => update("country", value)}
+                options={Object.keys(COUNTRY_NAMES).map((value) => ({
+                  value,
+                  label: countryName(value),
+                }))}
+              />
+              <Selector
+                label="检查项"
+                placeholder="检查项"
+                hasClear
+                hasSearch
+                width={156}
+                value={checkFilter}
+                onChange={(value) => update("check", value)}
+                options={checkOptions}
+              />
+              {activeFilters && (
+                <Button
+                  label="清除筛选"
+                  variant="ghost"
+                  size="sm"
+                  onClick={clearFilters}
+                />
+              )}
+            </>
+          ) : view === "channel" ? (
             <>
               <Selector
                 label="渠道"
-                isLabelHidden
                 placeholder="全部渠道"
                 hasClear
                 width={140}
@@ -695,7 +1041,6 @@ function QueueContents() {
               />
               <Selector
                 label="回执类型"
-                isLabelHidden
                 placeholder="回执类型"
                 hasClear
                 width={146}
@@ -707,7 +1052,6 @@ function QueueContents() {
               />
               <Selector
                 label="是否已映射"
-                isLabelHidden
                 placeholder="是否已映射"
                 hasClear
                 width={130}
@@ -723,7 +1067,6 @@ function QueueContents() {
             <>
               <Selector
                 label="补件来源"
-                isLabelHidden
                 placeholder="来源"
                 hasClear
                 width={100}
@@ -737,7 +1080,6 @@ function QueueContents() {
               />
               <Selector
                 label="商户截止"
-                isLabelHidden
                 placeholder="商户截止"
                 hasClear
                 width={128}
@@ -750,7 +1092,6 @@ function QueueContents() {
               />
               <Selector
                 label="重点商户"
-                isLabelHidden
                 placeholder="重点商户"
                 hasClear
                 width={122}
@@ -763,7 +1104,6 @@ function QueueContents() {
             <>
               <Selector
                 label="工单类型"
-                isLabelHidden
                 placeholder="类型"
                 hasClear
                 width={92}
@@ -777,7 +1117,6 @@ function QueueContents() {
               />
               <Selector
                 label="优先级"
-                isLabelHidden
                 placeholder="优先级"
                 hasClear
                 width={96}
@@ -791,7 +1130,6 @@ function QueueContents() {
               />
               <Selector
                 label="注册地"
-                isLabelHidden
                 placeholder="注册地"
                 hasClear
                 width={106}
@@ -803,7 +1141,6 @@ function QueueContents() {
               />
               <Selector
                 label="原因"
-                isLabelHidden
                 placeholder="原因"
                 hasClear
                 hasSearch
@@ -817,7 +1154,77 @@ function QueueContents() {
               />
             </>
           )}
-          <div className="queue-toolbar-actions">
+        </div>
+        <div className="list-toolbar">
+          <div className="list-toolbar-actions">
+            {sortableColumns.length > 0 && (
+              <div className="list-sort-controls">
+                <Selector
+                  label="排序"
+                  isLabelHidden
+                  placeholder="默认顺序"
+                  width={168}
+                  value={activeSort?.sortKey ?? "default"}
+                  onChange={(key) => {
+                    setSort(
+                      key && key !== "default"
+                        ? [
+                            {
+                              sortKey: key,
+                              direction: sort[0]?.direction ?? "ascending",
+                            },
+                          ]
+                        : [],
+                    );
+                    setPage(1);
+                  }}
+                  options={[
+                    { value: "default", label: "默认顺序" },
+                    ...sortableColumns.map((column) => ({
+                      value: column.key,
+                      label: `按${column.key === "C10" ? " SLA 截止时间" : column.key === "supplementProgress" ? "补件截止时间" : COLUMN_DEFINITIONS[column.key].title}`,
+                    })),
+                  ]}
+                />
+                <Button
+                  label={
+                    sort[0]?.direction === "descending"
+                      ? "改为升序"
+                      : "改为降序"
+                  }
+                  isIconOnly
+                  size="sm"
+                  variant="ghost"
+                  isDisabled={!activeSort}
+                  icon={
+                    sort[0]?.direction === "descending" ? (
+                      <ArrowDown size={14} />
+                    ) : (
+                      <ArrowUp size={14} />
+                    )
+                  }
+                  tooltip={
+                    !activeSort
+                      ? "先选择排序字段"
+                      : sort[0].direction === "descending"
+                        ? "当前降序，点击改为升序"
+                        : "当前升序，点击改为降序"
+                  }
+                  onClick={() => {
+                    setSort((current) =>
+                      current.map((entry) => ({
+                        ...entry,
+                        direction:
+                          entry.direction === "ascending"
+                            ? "descending"
+                            : "ascending",
+                      })),
+                    );
+                    setPage(1);
+                  }}
+                />
+              </div>
+            )}
             {manager && (
               <>
                 {view !== "extensions" && (
@@ -882,9 +1289,9 @@ function QueueContents() {
                   size="sm"
                   icon={<Download size={16} />}
                   onClick={exportRows}
-                  isDisabled={!resource.data?.rows.length}
+                  isDisabled={!sortedRows.length}
                   tooltip={
-                    !resource.data?.rows.length
+                    !sortedRows.length
                       ? "当前没有可导出的工单，调整筛选后可用"
                       : "导出当前筛选工单"
                   }
@@ -893,9 +1300,8 @@ function QueueContents() {
             )}
             <Button
               label="列设置"
-              variant="ghost"
+              variant="secondary"
               size="sm"
-              isIconOnly
               icon={<Columns3 size={16} />}
               onClick={() => setSettingsOpen(true)}
               tooltip="列设置与行密度"
@@ -906,8 +1312,8 @@ function QueueContents() {
           id="queue-results"
           ref={root}
           role="tabpanel"
-          aria-label={tabs.find((t) => t.key === tab)?.label ?? "工单"}
-          className="queue-results"
+          aria-labelledby={`queue-tab-${tab}`}
+          className="queue-results list-results"
           data-density={density}
         >
           <LoadState
@@ -926,8 +1332,24 @@ function QueueContents() {
               rowCount={sortedRows.length}
               emptyState={
                 <Empty
-                  title="暂无待处理工单"
-                  description={`当前筛选下暂无工单，今日已处理 ${resource.data?.todayCompleted ?? 0} 张。`}
+                  title={
+                    view === "review"
+                      ? activeFilters
+                        ? "没有符合条件的工单"
+                        : "这个分类下暂时没有工单"
+                      : "暂无待处理工单"
+                  }
+                  description={
+                    view === "review" ? (
+                      activeFilters ? (
+                        <Button label="清除筛选" onClick={clearFilters} />
+                      ) : (
+                        "新工单进入队列后会显示在这里"
+                      )
+                    ) : (
+                      `当前筛选下暂无工单，今日已处理 ${resource.data?.todayCompleted ?? 0} 张。`
+                    )
+                  }
                 />
               }
               plugins={{
@@ -945,9 +1367,24 @@ function QueueContents() {
             />
           </LoadState>
         </div>
-        <div className="queue-summary">
+        <div className="list-summary">
           共 {sortedRows.length} 条
           {selected.length ? ` · 已选择 ${selected.length} 条` : ""}
+          {band && (
+            <>
+              <span>
+                {" "}
+                · 已筛选：
+                {reviewBands.find((entry) => entry.key === band)?.label}
+              </span>
+              <Button
+                label="清除"
+                variant="ghost"
+                size="sm"
+                onClick={() => update("band", null)}
+              />
+            </>
+          )}
         </div>
       </section>
       <Dialog isOpen={settingsOpen} onOpenChange={setSettingsOpen} width={440}>
@@ -962,7 +1399,10 @@ function QueueContents() {
             value={density}
             onChange={(value) => setDensity(value as typeof density)}
             options={[
-              { value: "compact", label: "紧凑 · 40px" },
+              {
+                value: "compact",
+                label: "紧凑 · 54px",
+              },
               { value: "balanced", label: "标准" },
               { value: "spacious", label: "宽松" },
             ]}
@@ -988,10 +1428,13 @@ function QueueContents() {
                         ? activeKeys.filter((value) => value !== key)
                         : [
                             ...activeKeys.filter(
-                              (value) => value !== "C10" && value !== "actions",
+                              (value) =>
+                                value !== timingKey && value !== "actions",
                             ),
                             key,
-                            ...(availableKeys.includes("C10") ? ["C10"] : []),
+                            ...(availableKeys.includes(timingKey)
+                              ? [timingKey]
+                              : []),
                             "actions",
                           ];
                       settingsState.setActiveColumnKeys(next);
@@ -1001,7 +1444,7 @@ function QueueContents() {
                     }
                   />
                   {key !== "C01" &&
-                    key !== "C10" &&
+                    key !== timingKey &&
                     key !== "actions" &&
                     !autoHidden && (
                       <div className="row">
